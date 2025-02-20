@@ -358,7 +358,7 @@ def register_user(email: str = Form(...), password: str = Form(...)):
         cur.execute("""
             INSERT INTO "User"(email, password)
             VALUES (%s, %s)
-            RETURNING "ID"
+            RETURNING ID
         """, (email, password))
         new_id = cur.fetchone()[0]
         conn.commit()
