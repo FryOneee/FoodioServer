@@ -349,7 +349,7 @@ def register_user(email: str = Form(...), password: str = Form(...)):
         conn = get_db_connection()
         cur = conn.cursor()
 
-        cur.execute('SELECT "ID" FROM "User" WHERE email=%s', (email,))
+        cur.execute('SELECT ID FROM "User" WHERE email=%s', (email,))
         existing_user = cur.fetchone()
         if existing_user:
             logger.warning("Próba rejestracji użytkownika z istniejącym emailem: %s", email)
