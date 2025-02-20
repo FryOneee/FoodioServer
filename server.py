@@ -261,6 +261,7 @@ def get_jwks():
         resp = requests.get(JWKS_URL)
         if resp.status_code == 200:
             jwks_data = resp.json()
+            print(f"klucze jwks: {jwks_data}")
             logger.info("Pobrano klucze JWKS z Cognito.")
         else:
             logger.error("Nie można pobrać JWKS z Cognito, status: %s", resp.status_code)
