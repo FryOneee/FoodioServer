@@ -1,3 +1,5 @@
+import logging
+from logging.handlers import RotatingFileHandler
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from typing import Optional, List
@@ -9,8 +11,15 @@ import os
 import requests
 import json
 from jose import jwt
-
 from botocore.exceptions import ClientError
+
+# Konfiguracja logowania
+logger = logging.getLogger("server_logger")
+logger.setLevel(logging.INFO)
+handler = RotatingFileHandler("server.log", maxBytes=10 * 1024 * 1024, backupCount=5)
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+handler.setFormatter(formatter)
+logger.addHandler(handler)
 
 def get_secret():
     secret_name = "foodio-secrets"
@@ -28,8 +37,7 @@ def get_secret():
             SecretId=secret_name
         )
     except ClientError as e:
-        # For a list of exceptions thrown, see
-        # https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_GetSecretValue.html
+        logger.error("Błąd przy pobieraniu sekretów: %s", e)
         raise e
 
     secret = get_secret_value_response['SecretString']
@@ -63,6 +71,155 @@ def get_db_connection():
         password=DB_PASS
     )
 
+# Funkcja tworząca bazę danych, jeśli nie istnieje
+def create_database_if_not_exists():
+    try:
+        logger.info("Sprawdzanie istnienia bazy danych: %s", DB_NAME)
+        # Łączymy się z domyślną bazą 'postgres'
+        default_conn = psycopg2.connect(
+            host=DB_HOST,
+            port=DB_PORT,
+            database="postgres",
+            user=DB_USER,
+            password=DB_PASS
+        )
+        default_conn.autocommit = True
+        cur = default_conn.cursor()
+        cur.execute(f"SELECT 1 FROM pg_database WHERE datname = '{DB_NAME}';")
+        exists = cur.fetchone()
+        if not exists:
+            logger.info("Baza danych %s nie istnieje. Tworzenie...", DB_NAME)
+            cur.execute(f"CREATE DATABASE {DB_NAME};")
+            logger.info("Baza danych %s utworzona pomyślnie.", DB_NAME)
+        else:
+            logger.info("Baza danych %s już istnieje.", DB_NAME)
+        cur.close()
+        default_conn.close()
+    except Exception as e:
+        logger.error("Błąd przy tworzeniu bazy danych: %s", e)
+        raise
+
+# Funkcja inicjująca schemat bazy danych (tabele, klucze obce, itp.)
+def initialize_schema():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        logger.info("Inicjalizacja schematu bazy danych")
+        # Tworzenie tabel z użyciem IF NOT EXISTS
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS Goal (
+                ID int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+                User_ID int NOT NULL,
+                kcal int NOT NULL,
+                type int NOT NULL
+            );
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS Meal (
+                ID int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+                User_ID int NOT NULL,
+                img_link varchar(255) NOT NULL,
+                kcal int NOT NULL,
+                proteins int NOT NULL,
+                carbs int NOT NULL,
+                fats int NOT NULL,
+                date timestamp NOT NULL,
+                healthy_index int NOT NULL,
+                latitude decimal(9,6) NOT NULL,
+                longitude decimal(9,6) NOT NULL,
+                added bool NOT NULL DEFAULT false
+            );
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS OpenAI_request (
+                ID int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+                User_ID int NOT NULL,
+                Meal_ID int NOT NULL,
+                img_link varchar(255) NOT NULL,
+                date timestamp NOT NULL
+            );
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS Subscription (
+                ID int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+                User_ID int NOT NULL,
+                subscription_type int NOT NULL,
+                start_date date NOT NULL,
+                end_date date NOT NULL
+            );
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS "User" (
+                ID int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+                email varchar(255) NOT NULL,
+                password varchar(255) NULL
+            );
+        """)
+        # Dodanie kolumny cognito_sub (jeśli nie istnieje)
+        try:
+            cur.execute('ALTER TABLE "User" ADD COLUMN IF NOT EXISTS cognito_sub varchar(255);')
+            logger.info("Kolumna 'cognito_sub' została dodana lub już istnieje w tabeli User.")
+        except Exception as e:
+            logger.warning("Nie udało się dodać kolumny cognito_sub: %s", e)
+
+        # Dodawanie kluczy obcych – opakowujemy w blok try/except, aby pominąć błędy przy już istniejących ograniczeniach
+        alter_commands = [
+            """ALTER TABLE Goal ADD CONSTRAINT Goal_User
+                FOREIGN KEY (User_ID)
+                REFERENCES "User" (ID)
+                NOT DEFERRABLE
+                INITIALLY IMMEDIATE;""",
+            """ALTER TABLE OpenAI_request ADD CONSTRAINT OpenAI_request_Meal
+                FOREIGN KEY (Meal_ID)
+                REFERENCES Meal (ID)
+                NOT DEFERRABLE
+                INITIALLY IMMEDIATE;""",
+            """ALTER TABLE OpenAI_request ADD CONSTRAINT OpenAI_request_User
+                FOREIGN KEY (User_ID)
+                REFERENCES "User" (ID)
+                NOT DEFERRABLE
+                INITIALLY IMMEDIATE;""",
+            """ALTER TABLE Subscription ADD CONSTRAINT Subscription_User
+                FOREIGN KEY (User_ID)
+                REFERENCES "User" (ID)
+                NOT DEFERRABLE
+                INITIALLY IMMEDIATE;""",
+            """ALTER TABLE Meal ADD CONSTRAINT Table_2_User
+                FOREIGN KEY (User_ID)
+                REFERENCES "User" (ID)
+                NOT DEFERRABLE
+                INITIALLY IMMEDIATE;"""
+        ]
+        for cmd in alter_commands:
+            try:
+                cur.execute(cmd)
+            except Exception as e:
+                logger.warning("Błąd przy dodawaniu ograniczenia: %s", e)
+
+        conn.commit()
+        logger.info("Schemat bazy danych został pomyślnie zainicjowany i jest gotowy do użytku.")
+    except Exception as e:
+        conn.rollback()
+        logger.error("Błąd przy inicjalizacji schematu: %s", e)
+    finally:
+        cur.close()
+        conn.close()
+
+# Rejestracja funkcji inicjujących bazę danych przy starcie aplikacji
+@app.on_event("startup")
+def initialize_database():
+    logger.info("Uruchamianie serwera - inicjalizacja bazy danych")
+    try:
+        # Próba połączenia – jeśli baza nie istnieje, wystąpi błąd
+        conn = get_db_connection()
+        conn.close()
+        logger.info("Baza danych %s już istnieje.", DB_NAME)
+    except psycopg2.OperationalError:
+        # Jeśli wystąpił błąd, utwórz bazę danych
+        create_database_if_not_exists()
+    # Następnie inicjujemy schemat (tabele, klucze)
+    initialize_schema()
+
 # -- Połączenie z S3 --
 s3 = boto3.client(
     's3',
@@ -95,7 +252,9 @@ def get_jwks():
         resp = requests.get(JWKS_URL)
         if resp.status_code == 200:
             jwks_data = resp.json()
+            logger.info("Pobrano klucze JWKS z Cognito.")
         else:
+            logger.error("Nie można pobrać JWKS z Cognito, status: %s", resp.status_code)
             raise HTTPException(status_code=500, detail="Nie można pobrać JWKS z Cognito.")
     return jwks_data
 
@@ -114,6 +273,7 @@ def verify_jwt_token(token: str):
             public_key = key
             break
     if not public_key:
+        logger.error("Nieprawidłowy token (brak odpowiedniego klucza kid)")
         raise HTTPException(status_code=401, detail="Nieprawidłowy token (kid).")
 
     # Dekodowanie i weryfikacja
@@ -125,7 +285,9 @@ def verify_jwt_token(token: str):
             issuer=f"https://cognito-idp.{COGNITO_REGION}.amazonaws.com/{USER_POOL_ID}",
             options={"verify_aud": True}  # weryfikacja aud
         )
+        logger.info("Token JWT został pomyślnie zweryfikowany.")
     except Exception as e:
+        logger.error("Token niepoprawny: %s", e)
         raise HTTPException(status_code=401, detail=f"Token niepoprawny: {str(e)}")
 
     return decoded_token
@@ -146,19 +308,19 @@ def get_or_create_user_by_sub(sub: str, email: str) -> int:
     conn = get_db_connection()
     cur = conn.cursor()
     try:
-        # Szukamy usera po polu cognito_sub
         cur.execute('SELECT "ID" FROM "User" WHERE cognito_sub = %s', (sub,))
         row = cur.fetchone()
         if row:
             user_id = row[0]
+            logger.info("Znaleziono istniejącego użytkownika o sub: %s", sub)
         else:
-            # Jeśli nie ma, tworzymy
             cur.execute(
                 'INSERT INTO "User"(email, cognito_sub) VALUES (%s, %s) RETURNING "ID"',
                 (email, sub)
             )
             user_id = cur.fetchone()[0]
             conn.commit()
+            logger.info("Utworzono nowego użytkownika o sub: %s", sub)
         return user_id
     finally:
         cur.close()
@@ -167,7 +329,6 @@ def get_or_create_user_by_sub(sub: str, email: str) -> int:
 # ------------------------------------------------------------
 # 3. Stare endpointy (opcjonalne) - rejestracja, subskrypcje, cele
 # ------------------------------------------------------------
-# Te endpointy możesz zostawić lub usunąć w zależności od potrzeb.
 
 @app.post("/register")
 def register_user(email: str = Form(...), password: str = Form(...)):
@@ -179,13 +340,12 @@ def register_user(email: str = Form(...), password: str = Form(...)):
         conn = get_db_connection()
         cur = conn.cursor()
 
-        # Sprawdź czy email już istnieje
         cur.execute('SELECT "ID" FROM "User" WHERE email=%s', (email,))
         existing_user = cur.fetchone()
         if existing_user:
+            logger.warning("Próba rejestracji użytkownika z istniejącym emailem: %s", email)
             raise HTTPException(status_code=400, detail="Użytkownik o podanym email już istnieje.")
 
-        # Wstaw nowego użytkownika
         cur.execute("""
             INSERT INTO "User"(email, password)
             VALUES (%s, %s)
@@ -193,8 +353,10 @@ def register_user(email: str = Form(...), password: str = Form(...)):
         """, (email, password))
         new_id = cur.fetchone()[0]
         conn.commit()
+        logger.info("Zarejestrowano użytkownika: %s", email)
         return {"message": "Użytkownik zarejestrowany.", "user_id": new_id}
     except Exception as e:
+        logger.error("Błąd przy rejestracji użytkownika: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         cur.close()
@@ -210,7 +372,6 @@ def buy_subscription(user_id: int = Form(...), subscription_type: int = Form(...
         conn = get_db_connection()
         cur = conn.cursor()
 
-        # Wstaw subskrypcję
         cur.execute("""
             INSERT INTO Subscription(User_ID, subscription_type, start_date, end_date)
             VALUES (%s, %s, %s, %s)
@@ -218,8 +379,10 @@ def buy_subscription(user_id: int = Form(...), subscription_type: int = Form(...
         """, (user_id, subscription_type, start_date, end_date))
         sub_id = cur.fetchone()[0]
         conn.commit()
+        logger.info("Zakupiono subskrypcję dla user_id: %s", user_id)
         return {"message": "Subskrypcja kupiona.", "subscription_id": sub_id}
     except Exception as e:
+        logger.error("Błąd przy zakupie subskrypcji: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         cur.close()
@@ -234,12 +397,10 @@ def set_goal(user_id: int = Form(...), kcal: int = Form(...), goal_type: int = F
         conn = get_db_connection()
         cur = conn.cursor()
 
-        # Sprawdź czy użytkownik ma już cel
         cur.execute("SELECT ID FROM Goal WHERE User_ID=%s", (user_id,))
         existing_goal = cur.fetchone()
 
         if existing_goal:
-            # Aktualizacja
             goal_id = existing_goal[0]
             cur.execute("""
                 UPDATE Goal
@@ -247,9 +408,9 @@ def set_goal(user_id: int = Form(...), kcal: int = Form(...), goal_type: int = F
                 WHERE ID=%s
             """, (kcal, goal_type, goal_id))
             conn.commit()
+            logger.info("Zaktualizowano cel dla user_id: %s", user_id)
             return {"message": "Zaktualizowano istniejący cel.", "goal_id": goal_id}
         else:
-            # Wstaw nowy cel
             cur.execute("""
                 INSERT INTO Goal(User_ID, kcal, type)
                 VALUES (%s, %s, %s)
@@ -257,8 +418,10 @@ def set_goal(user_id: int = Form(...), kcal: int = Form(...), goal_type: int = F
             """, (user_id, kcal, goal_type))
             goal_id = cur.fetchone()[0]
             conn.commit()
+            logger.info("Utworzono nowy cel dla user_id: %s", user_id)
             return {"message": "Utworzono nowy cel.", "goal_id": goal_id}
     except Exception as e:
+        logger.error("Błąd przy ustawianiu celu: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         cur.close()
@@ -292,7 +455,6 @@ def add_meal(
       - dla użytkowników bez subskrypcji: 3 zapytania dziennie.
     """
     try:
-        # 1. Pobieramy user_id z Cognito
         sub = current_user["sub"]
         email = current_user.get("email", "")
         user_id = get_or_create_user_by_sub(sub, email)
@@ -303,7 +465,6 @@ def add_meal(
         now = datetime.now()
         today = date.today()
 
-        # Sprawdzenie aktywnej subskrypcji
         cur.execute("""
             SELECT COUNT(*) 
             FROM Subscription 
@@ -313,7 +474,6 @@ def add_meal(
         is_subscribed = subscription_count > 0
 
         if is_subscribed:
-            # Limit: 5 zapytań na godzinę
             time_limit = now - timedelta(hours=1)
             cur.execute("""
                 SELECT COUNT(*)
@@ -322,9 +482,9 @@ def add_meal(
             """, (user_id, time_limit))
             count_last_hour = cur.fetchone()[0]
             if count_last_hour >= 5:
+                logger.info("Limit zapytań na godzinę przekroczony dla user_id: %s", user_id)
                 return {"message": "Przekroczono limit zapytań: 5 zapytań na godzinę.", "allowed": False}
         else:
-            # Limit: 3 zapytania dziennie
             cur.execute("""
                 SELECT COUNT(*)
                 FROM OpenAI_request
@@ -332,12 +492,11 @@ def add_meal(
             """, (user_id, today))
             count_requests = cur.fetchone()[0]
             if count_requests >= 3:
+                logger.info("Dzienny limit zapytań przekroczony dla user_id: %s", user_id)
                 return {"message": "Przekroczono dzienny limit zapytań do OpenAI.", "allowed": False}
 
-        # 2. Odczyt oryginalnego obrazu
         original_file_contents = image.file.read()
 
-        # Zapis oryginalnego obrazu do S3
         file_name = f"{user_id}_{int(now.timestamp())}_{image.filename}"
         s3.put_object(
             Bucket=S3_BUCKET_NAME,
@@ -345,15 +504,13 @@ def add_meal(
             Body=original_file_contents
         )
 
-        # 3. Przygotowanie obrazu do wysłania do OpenAI:
-        #    - Przeskalowanie obrazu do maksymalnych rozmiarów 512x1024 (dla obrazu pionowego)
         from PIL import Image
         import io
 
         image_stream = io.BytesIO(original_file_contents)
         img = Image.open(image_stream)
 
-        max_size = (512, 1024)  # maksymalna szerokość 512, maksymalna wysokość 1024
+        max_size = (512, 1024)
         img_for_openai = img.copy()
         if img_for_openai.width > max_size[0] or img_for_openai.height > max_size[1]:
             img_for_openai.thumbnail(max_size, Image.ANTIALIAS)
@@ -363,7 +520,6 @@ def add_meal(
         img_for_openai.save(buf, format=img_format)
         resized_image_bytes = buf.getvalue()
 
-        # --- Nowe: Zapis przeskalowanego obrazu do S3 oraz generowanie 5-minutowego linku ---
         resized_file_name = f"resized_{file_name}"
         s3.put_object(
             Bucket=S3_BUCKET_NAME,
@@ -373,11 +529,9 @@ def add_meal(
         presigned_url = s3.generate_presigned_url(
             'get_object',
             Params={'Bucket': S3_BUCKET_NAME, 'Key': resized_file_name},
-            ExpiresIn=300  # 5 minut = 300 sekund
+            ExpiresIn=300
         )
-        # -----------------------------------------------------------------------------------
 
-        # 4. Wstawienie rekordu posiłku do bazy – zapisujemy klucz oryginalnego obrazu, a nie tymczasowy URL
         cur.execute("""
             INSERT INTO Meal(
                 User_ID,
@@ -397,8 +551,6 @@ def add_meal(
         meal_id = cur.fetchone()[0]
         conn.commit()
 
-        # 5. Wywołanie zapytania do OpenAI z wykorzystaniem przeskalowanego obrazu
-        #    Teraz obraz przekazujemy jako 5-minutowy link do S3
         response = openai.ChatCompletion.create(
             model="gpt-4o-mini",
             messages=[
@@ -424,7 +576,6 @@ def add_meal(
         )
         openai_result_text = response.choices[0].message["content"]
 
-        # 6. Parsowanie odpowiedzi z OpenAI – oczekujemy formatu JSON
         try:
             parsed = json.loads(openai_result_text)
             kcal_val = parsed.get("kcal", -1)
@@ -433,13 +584,13 @@ def add_meal(
             fats_val = parsed.get("fats", -1)
             healthy_index_val = parsed.get("healthy_index", healthy_index)
         except Exception as e:
+            logger.error("Błąd przy parsowaniu odpowiedzi z OpenAI: %s", e)
             kcal_val = -1
             proteins_val = -1
             carbs_val = -1
             fats_val = -1
             healthy_index_val = healthy_index
 
-        # 7. Aktualizacja rekordu posiłku w bazie danymi z OpenAI
         cur.execute("""
             UPDATE Meal
             SET kcal = %s, proteins = %s, carbs = %s, fats = %s, healthy_index = %s
@@ -447,7 +598,6 @@ def add_meal(
         """, (kcal_val, proteins_val, carbs_val, fats_val, healthy_index_val, meal_id))
         conn.commit()
 
-        # 8. Zapis loga zapytania do OpenAI_request
         cur.execute("""
             INSERT INTO OpenAI_request(User_ID, Meal_ID, img_link, date)
             VALUES (%s, %s, %s, %s)
@@ -456,6 +606,7 @@ def add_meal(
         openai_req_id = cur.fetchone()[0]
         conn.commit()
 
+        logger.info("Dodano posiłek (meal_id: %s) dla user_id: %s", meal_id, user_id)
         return {
             "message": "Dodano posiłek i zaktualizowano dane makroskładników przez OpenAI.",
             "meal_id": meal_id,
@@ -469,6 +620,7 @@ def add_meal(
         }
 
     except Exception as e:
+        logger.error("Błąd przy dodawaniu posiłku: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         try:
@@ -509,7 +661,6 @@ def secure_meals_by_day(current_user: dict = Depends(get_current_user)):
         meals_by_day = {}
         for row in rows:
             day = row[0].isoformat()
-            # Generujemy presigned URL na podstawie klucza (row[2])
             presigned_url = s3.generate_presigned_url(
                 'get_object',
                 Params={'Bucket': S3_BUCKET_NAME, 'Key': row[2]},
@@ -536,9 +687,10 @@ def secure_meals_by_day(current_user: dict = Depends(get_current_user)):
                 "day": day,
                 "meals": meals
             })
-
+        logger.info("Pobrano posiłki dla user_id: %s", user_id)
         return result
     except Exception as e:
+        logger.error("Błąd przy pobieraniu posiłków: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         cur.close()
@@ -563,21 +715,37 @@ def secure_edit_meal(meal_id: int, current_user: dict = Depends(get_current_user
         conn = get_db_connection()
         cur = conn.cursor()
 
-        # Sprawdzamy, czy posiłek istnieje i należy do użytkownika
         cur.execute("SELECT User_ID FROM Meal WHERE ID = %s", (meal_id,))
         row = cur.fetchone()
         if not row:
+            logger.warning("Posiłek o ID %s nie został znaleziony.", meal_id)
             raise HTTPException(status_code=404, detail="Posiłek nie został znaleziony.")
         if row[0] != user_id:
+            logger.warning("Użytkownik %s próbuje edytować posiłek, który nie należy do niego.", user_id)
             raise HTTPException(status_code=403, detail="Brak uprawnień do edycji tego posiłku.")
 
-        # Aktualizujemy pole 'added' na true
         cur.execute("UPDATE Meal SET added = true WHERE ID = %s", (meal_id,))
         conn.commit()
-
+        logger.info("Zaktualizowano posiłek (meal_id: %s) dla user_id: %s", meal_id, user_id)
         return {"message": "Posiłek został zaktualizowany, pole 'added' ustawione na true."}
     except Exception as e:
+        logger.error("Błąd przy edycji posiłku: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         cur.close()
         conn.close()
+
+# ------------------------------------------------------------
+# Schemat bazy danych
+# ------------------------------------------------------------
+# -- Created by Vertabelo (http://vertabelo.com)
+# -- Last modification date: 2025-02-16 03:24:09.208
+#
+# Powyżej znajdują się polecenia SQL tworzące tabele:
+#   Table: Goal
+#   Table: Meal
+#   Table: OpenAI_request
+#   Table: Subscription
+#   Table: User
+#
+# Dodatkowo, dodane zostało ograniczenie kluczy obcych między tabelami.
