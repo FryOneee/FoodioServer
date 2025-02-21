@@ -163,7 +163,7 @@ def initialize_schema():
             );
         """)
         cur.execute("""
-            CREATE TABLE IF NOT EXISTS User (
+            CREATE TABLE IF NOT EXISTS "User" (
                 ID int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
                 email varchar(255) NOT NULL,
                 password varchar(255) NULL
@@ -171,7 +171,7 @@ def initialize_schema():
         """)
         # Dodanie kolumny cognito_sub (jeśli nie istnieje)
         try:
-            cur.execute('ALTER TABLE User ADD COLUMN IF NOT EXISTS cognito_sub varchar(255);')
+            cur.execute('ALTER TABLE "User" ADD COLUMN IF NOT EXISTS cognito_sub varchar(255);')
             logger.info("Kolumna 'cognito_sub' została dodana lub już istnieje w tabeli User.")
         except Exception as e:
             logger.warning("Nie udało się dodać kolumny cognito_sub: %s", e)
@@ -180,7 +180,7 @@ def initialize_schema():
         alter_commands = [
             """ALTER TABLE Goal ADD CONSTRAINT Goal_User
                 FOREIGN KEY (User_ID)
-                REFERENCES User (ID)
+                REFERENCES "User" (ID)
                 NOT DEFERRABLE
                 INITIALLY IMMEDIATE;""",
             """ALTER TABLE OpenAI_request ADD CONSTRAINT OpenAI_request_Meal
@@ -190,17 +190,17 @@ def initialize_schema():
                 INITIALLY IMMEDIATE;""",
             """ALTER TABLE OpenAI_request ADD CONSTRAINT OpenAI_request_User
                 FOREIGN KEY (User_ID)
-                REFERENCES User (ID)
+                REFERENCES "User" (ID)
                 NOT DEFERRABLE
                 INITIALLY IMMEDIATE;""",
             """ALTER TABLE Subscription ADD CONSTRAINT Subscription_User
                 FOREIGN KEY (User_ID)
-                REFERENCES User (ID)
+                REFERENCES "User" (ID)
                 NOT DEFERRABLE
                 INITIALLY IMMEDIATE;""",
             """ALTER TABLE Meal ADD CONSTRAINT Table_2_User
                 FOREIGN KEY (User_ID)
-                REFERENCES User (ID)
+                REFERENCES "User" (ID)
                 NOT DEFERRABLE
                 INITIALLY IMMEDIATE;"""
         ]
@@ -398,20 +398,20 @@ async def get_current_user(request: Request, creds: HTTPAuthorizationCredentials
 
 def get_or_create_user_by_sub(sub: str, email: str) -> int:
     """
-    Zwraca ID użytkownika w tabeli User na podstawie sub (Cognito lub Apple).
+    Zwraca ID użytkownika w tabeli "User" na podstawie sub (Cognito lub Apple).
     Jeśli nie istnieje, tworzy nowego użytkownika i zwraca ID.
     """
     conn = get_db_connection()
     cur = conn.cursor()
     try:
-        cur.execute('SELECT ID FROM User WHERE cognito_sub = %s', (sub,))
+        cur.execute('SELECT ID FROM "User" WHERE cognito_sub = %s', (sub,))
         row = cur.fetchone()
         if row:
             user_id = row[0]
             logger.info("Znaleziono istniejącego użytkownika o sub: %s", sub)
         else:
             cur.execute(
-                'INSERT INTO User(email, cognito_sub) VALUES (%s, %s) RETURNING ID',
+                'INSERT INTO "User"(email, cognito_sub) VALUES (%s, %s) RETURNING ID',
                 (email, sub)
             )
             user_id = cur.fetchone()[0]
@@ -436,14 +436,14 @@ def register_user(email: str = Form(...), password: str = Form(...)):
         conn = get_db_connection()
         cur = conn.cursor()
 
-        cur.execute('SELECT ID FROM User WHERE email=%s', (email,))
+        cur.execute('SELECT ID FROM "User" WHERE email=%s', (email,))
         existing_user = cur.fetchone()
         if existing_user:
             logger.warning("Próba rejestracji użytkownika z istniejącym emailem: %s", email)
             raise HTTPException(status_code=400, detail="Użytkownik o podanym email już istnieje.")
 
         cur.execute("""
-            INSERT INTO User(email, password)
+            INSERT INTO "User"(email, password)
             VALUES (%s, %s)
             RETURNING ID
         """, (email, password))
@@ -550,7 +550,7 @@ def add_meal(
 
     Limity zapytań:
       - dla subskrybentów: 5 zapytań na godzinę,
-      - dla użytkowników bez subskrypcji: 3 zapytań dziennie.
+      - dla użytkowników bez subskrypcji: 3 zapytania dziennie.
     """
     try:
         sub = current_user["sub"]
