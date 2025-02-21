@@ -654,7 +654,7 @@ def add_meal(
                         {"type": "text", "text": (
                             "Proszę oszacować wartości makroskładników na podstawie obrazu. "
                             "Podaj wynik w formacie JSON, zawierający dokładnie klucze: "
-                            "'kcal', 'proteins', 'carbs', 'fats', 'healthy_index'. "
+                            "'name', 'kcal', 'proteins', 'carbs', 'fats', 'healthy_index'. "
                             "Nie dodawaj żadnego dodatkowego tekstu."
                         )},
                         {
