@@ -1,4 +1,5 @@
 import logging
+import re
 from logging.handlers import RotatingFileHandler
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -132,6 +133,7 @@ def initialize_schema():
             CREATE TABLE IF NOT EXISTS Meal (
                 ID int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
                 User_ID int NOT NULL,
+                meal_name varchar(255) NOT NULL,
                 img_link varchar(255) NOT NULL,
                 kcal int NOT NULL,
                 proteins int NOT NULL,
@@ -400,23 +402,44 @@ def get_or_create_user_by_sub(sub: str, email: str) -> int:
     """
     Zwraca ID użytkownika w tabeli "User" na podstawie sub (Cognito lub Apple).
     Jeśli nie istnieje, tworzy nowego użytkownika i zwraca ID.
+    Jeżeli istnieje użytkownik z danym emailem, ale bez przypisanego sub (NULL lub pusty),
+    to aktualizuje jego rekord dodając podany sub.
     """
     conn = get_db_connection()
     cur = conn.cursor()
     try:
+        # Szukamy użytkownika po sub
         cur.execute('SELECT ID FROM "User" WHERE cognito_sub = %s', (sub,))
         row = cur.fetchone()
         if row:
             user_id = row[0]
             logger.info("Znaleziono istniejącego użytkownika o sub: %s", sub)
         else:
+            # Jeśli nie znaleziono po sub, sprawdzamy czy istnieje użytkownik z danym emailem
+            # który nie ma ustawionego sub (NULL lub pusty)
             cur.execute(
-                'INSERT INTO "User"(email, cognito_sub) VALUES (%s, %s) RETURNING ID',
-                (email, sub)
+                'SELECT ID FROM "User" WHERE email = %s AND (cognito_sub IS NULL OR cognito_sub = %s)',
+                (email, '')
             )
-            user_id = cur.fetchone()[0]
-            conn.commit()
-            logger.info("Utworzono nowego użytkownika o sub: %s", sub)
+            row = cur.fetchone()
+            if row:
+                user_id = row[0]
+                # Aktualizacja rekordu, ustawiamy sub
+                cur.execute(
+                    'UPDATE "User" SET cognito_sub = %s WHERE ID = %s',
+                    (sub, user_id)
+                )
+                conn.commit()
+                logger.info("Zaktualizowano użytkownika z emailem: %s, ustawiono sub: %s", email, sub)
+            else:
+                # Użytkownik nie istnieje – tworzymy nowego
+                cur.execute(
+                    'INSERT INTO "User"(email, cognito_sub) VALUES (%s, %s) RETURNING ID',
+                    (email, sub)
+                )
+                user_id = cur.fetchone()[0]
+                conn.commit()
+                logger.info("Utworzono nowego użytkownika o sub: %s", sub)
         return user_id
     finally:
         cur.close()
@@ -550,7 +573,7 @@ def add_meal(
 
     Limity zapytań:
       - dla subskrybentów: 5 zapytań na godzinę,
-      - dla użytkowników bez subskrypcji: 3 zapytania dziennie.
+      - dla użytkowników bez subskrypcji: 3 zapytań dziennie.
     """
     try:
         sub = current_user["sub"]
@@ -629,6 +652,7 @@ def add_meal(
         cur.execute("""
             INSERT INTO Meal(
                 User_ID,
+                meal_name,
                 img_link,
                 kcal,
                 proteins,
@@ -639,9 +663,9 @@ def add_meal(
                 latitude,
                 longitude
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING ID
-        """, (user_id, file_name, -1, -1, -1, -1, now, healthy_index, latitude, longitude))
+        """, (user_id, "dish", file_name, -1, -1, -1, -1, now, healthy_index, latitude, longitude))
         meal_id = cur.fetchone()[0]
         conn.commit()
 
@@ -669,10 +693,14 @@ def add_meal(
             max_tokens=300,
         )
         openai_result_text = response.choices[0].message["content"]
-        logger.info(f"odpowiedz od openai: {openai_result_text}")
+        fixed_text = re.sub(r'("name":\s*)([A-Za-z]+)', r'\1"\2"', openai_result_text)
+
+        logger.info(f"odpowiedz od openai (openai_result_text): {openai_result_text}")
+        logger.info(f"odpowiedz od openai (fixed_text): {fixed_text}")
 
         try:
-            parsed = json.loads(openai_result_text)
+            parsed = json.loads(fixed_text)
+            name_val = parsed.get("name", -1)
             kcal_val = parsed.get("kcal", -1)
             proteins_val = parsed.get("proteins", -1)
             carbs_val = parsed.get("carbs", -1)
@@ -688,9 +716,9 @@ def add_meal(
 
         cur.execute("""
             UPDATE Meal
-            SET kcal = %s, proteins = %s, carbs = %s, fats = %s, healthy_index = %s
+            SET meal_name=%s, kcal = %s, proteins = %s, carbs = %s, fats = %s, healthy_index = %s
             WHERE ID = %s
-        """, (kcal_val, proteins_val, carbs_val, fats_val, healthy_index_val, meal_id))
+        """, (name_val, kcal_val, proteins_val, carbs_val, fats_val, healthy_index_val, meal_id))
         conn.commit()
 
         cur.execute("""
