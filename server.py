@@ -330,7 +330,7 @@ def get_apple_jwks():
         resp = requests.get(APPLE_JWKS_URL)
         if resp.status_code == 200:
             apple_jwks_data = resp.json()
-            logger.info(f"apple jwks: {apple_jwks_data}")
+            # logger.info(f"apple jwks: {apple_jwks_data}")
             logger.info("Pobrano klucze JWKS z Apple.")
         else:
             logger.error("Nie można pobrać JWKS z Apple, status: %s", resp.status_code)
