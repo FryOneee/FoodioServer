@@ -693,6 +693,11 @@ def add_meal(
             max_tokens=300,
         )
         openai_result_text = response.choices[0].message["content"]
+
+        # Usuń znaki otaczające markdown, np. ```json na początku i ``` na końcu
+        if openai_result_text.startswith("```"):
+            openai_result_text = re.sub(r'^```(?:json)?\s*|```$', '', openai_result_text).strip()
+
         fixed_text = re.sub(r'("name":\s*)([A-Za-z]+)', r'\1"\2"', openai_result_text)
 
         logger.info(f"odpowiedz od openai (openai_result_text): {openai_result_text}")
@@ -700,7 +705,7 @@ def add_meal(
 
         try:
             parsed = json.loads(fixed_text)
-            name_val = parsed.get("name", -1)
+            name_val = parsed.get("name", "dish")
             kcal_val = parsed.get("kcal", -1)
             proteins_val = parsed.get("proteins", -1)
             carbs_val = parsed.get("carbs", -1)
@@ -708,6 +713,7 @@ def add_meal(
             healthy_index_val = parsed.get("healthy_index", healthy_index)
         except Exception as e:
             logger.error("Błąd przy parsowaniu odpowiedzi z OpenAI: %s", e)
+            name_val = "dish"
             kcal_val = -1
             proteins_val = -1
             carbs_val = -1
