@@ -669,6 +669,7 @@ def add_meal(
             max_tokens=300,
         )
         openai_result_text = response.choices[0].message["content"]
+        logger.info(f"odpowiedz od openai: {openai_result_text}")
 
         try:
             parsed = json.loads(openai_result_text)
