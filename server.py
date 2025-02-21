@@ -12,8 +12,8 @@ import requests
 import json
 from jose import jwt
 from botocore.exceptions import ClientError
-import logging
-from logging.handlers import RotatingFileHandler
+from PIL import Image
+import io
 
 logger = logging.getLogger("server_logger")
 logger.setLevel(logging.INFO)
@@ -29,6 +29,7 @@ console_handler = logging.StreamHandler()
 console_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 console_handler.setFormatter(console_formatter)
 logger.addHandler(console_handler)
+
 
 def get_secret():
     secret_name = "foodio-secrets"
@@ -52,6 +53,7 @@ def get_secret():
     secret = get_secret_value_response['SecretString']
     return secret
 
+
 # Wczytanie konfiguracji z AWS Secrets Manager
 secrets_data = json.loads(get_secret())
 
@@ -71,6 +73,7 @@ DB_NAME = secrets_data.get("DB_NAME")
 DB_USER = secrets_data.get("DB_USER")
 DB_PASS = secrets_data.get("DB_PASS")
 
+
 def get_db_connection():
     return psycopg2.connect(
         host=DB_HOST,
@@ -79,6 +82,7 @@ def get_db_connection():
         user=DB_USER,
         password=DB_PASS
     )
+
 
 # Funkcja tworząca bazę danych, jeśli nie istnieje
 def create_database_if_not_exists():
@@ -107,6 +111,7 @@ def create_database_if_not_exists():
     except Exception as e:
         logger.error("Błąd przy tworzeniu bazy danych: %s", e)
         raise
+
 
 # Funkcja inicjująca schemat bazy danych (tabele, klucze obce, itp.)
 def initialize_schema():
@@ -214,6 +219,7 @@ def initialize_schema():
         cur.close()
         conn.close()
 
+
 # Rejestracja funkcji inicjujących bazę danych przy starcie aplikacji
 @app.on_event("startup")
 def initialize_database():
@@ -228,6 +234,7 @@ def initialize_database():
         create_database_if_not_exists()
     # Następnie inicjujemy schemat (tabele, klucze)
     initialize_schema()
+
 
 # -- Połączenie z S3 --
 s3 = boto3.client(
@@ -251,6 +258,7 @@ JWKS_URL = f"https://cognito-idp.{COGNITO_REGION}.amazonaws.com/{USER_POOL_ID}/.
 oauth2_scheme = HTTPBearer()
 jwks_data = None
 
+
 def get_jwks():
     """
     Pobiera klucze publiczne z Cognito (JWKS), trzyma w pamięci (jwks_data),
@@ -261,16 +269,16 @@ def get_jwks():
         resp = requests.get(JWKS_URL)
         if resp.status_code == 200:
             jwks_data = resp.json()
-            print(f"klucze jwks: {jwks_data}")
             logger.info("Pobrano klucze JWKS z Cognito.")
         else:
             logger.error("Nie można pobrać JWKS z Cognito, status: %s", resp.status_code)
             raise HTTPException(status_code=500, detail="Nie można pobrać JWKS z Cognito.")
     return jwks_data
 
+
 def verify_jwt_token(token: str):
     """
-    Weryfikuje podpis JWT, sprawdza 'aud' i 'iss', zwraca payload (claims).
+    Weryfikuje podpis JWT, sprawdza 'aud' i 'iss', zwraca payload (claims) dla tokenów Cognito.
     """
     jwks = get_jwks()
     unverified_headers = jwt.get_unverified_header(token)
@@ -286,34 +294,111 @@ def verify_jwt_token(token: str):
         logger.error("Nieprawidłowy token (brak odpowiedniego klucza kid)")
         raise HTTPException(status_code=401, detail="Nieprawidłowy token (kid).")
 
-    # Dekodowanie i weryfikacja
     try:
         decoded_token = jwt.decode(
             token,
             public_key,
-            audience=COGNITO_APP_CLIENT_ID,  # weryfikacja audience
+            audience=COGNITO_APP_CLIENT_ID,
             issuer=f"https://cognito-idp.{COGNITO_REGION}.amazonaws.com/{USER_POOL_ID}",
-            options={"verify_aud": True}  # weryfikacja aud
+            options={"verify_aud": True}
         )
-        logger.info("Token JWT został pomyślnie zweryfikowany.")
+        logger.info("Token JWT z Cognito został pomyślnie zweryfikowany.")
     except Exception as e:
-        logger.error("Token niepoprawny: %s", e)
-        raise HTTPException(status_code=401, detail=f"Token niepoprawny: {str(e)}")
-
+        logger.error("Token Cognito niepoprawny: %s", e)
+        raise HTTPException(status_code=401, detail=f"Token Cognito niepoprawny: {str(e)}")
     return decoded_token
 
+
+# ------------------------------------------------------------
+# 2a. Konfiguracja Apple (SIWA) – weryfikacja tokena JWT przy użyciu JWK od Apple
+# ------------------------------------------------------------
+
+APPLE_JWKS_URL = "https://appleid.apple.com/auth/keys"
+APPLE_CLIENT_ID = secrets_data.get(
+    "APPLE_CLIENT_ID")  # Upewnij się, że ten klucz jest zdefiniowany w AWS Secrets Manager
+
+apple_jwks_data = None
+
+
+def get_apple_jwks():
+    """
+    Pobiera klucze publiczne z Apple (JWKS) i zapisuje je w pamięci,
+    by nie pobierać przy każdym wywołaniu.
+    """
+    global apple_jwks_data
+    if not apple_jwks_data:
+        resp = requests.get(APPLE_JWKS_URL)
+        if resp.status_code == 200:
+            apple_jwks_data = resp.json()
+            logger.info("Pobrano klucze JWKS z Apple.")
+        else:
+            logger.error("Nie można pobrać JWKS z Apple, status: %s", resp.status_code)
+            raise HTTPException(status_code=500, detail="Nie można pobrać JWKS z Apple.")
+    return apple_jwks_data
+
+
+def verify_apple_jwt_token(token: str):
+    """
+    Weryfikuje token JWT otrzymany od Apple poprzez:
+    1. Pobranie kluczy JWKS z Apple.
+    2. Wybór właściwego klucza na podstawie nagłówka tokena.
+    3. Dekodowanie tokena i weryfikację 'aud' oraz 'iss'.
+    """
+    jwks = get_apple_jwks()
+    unverified_headers = jwt.get_unverified_header(token)
+    kid = unverified_headers.get("kid")
+
+    public_key = None
+    for key in jwks["keys"]:
+        if key["kid"] == kid:
+            public_key = key
+            break
+    if not public_key:
+        logger.error("Nieprawidłowy token (brak odpowiedniego klucza kid) z Apple.")
+        raise HTTPException(status_code=401, detail="Nieprawidłowy token (kid) z Apple.")
+
+    try:
+        decoded_token = jwt.decode(
+            token,
+            public_key,
+            audience=APPLE_CLIENT_ID,
+            issuer="https://appleid.apple.com",
+            options={"verify_aud": True}
+        )
+        logger.info("Token JWT z Apple został pomyślnie zweryfikowany.")
+    except Exception as e:
+        logger.error("Token z Apple niepoprawny: %s", e)
+        raise HTTPException(status_code=401, detail=f"Token z Apple niepoprawny: {str(e)}")
+    return decoded_token
+
+
+# ------------------------------------------------------------
+# 2b. Unified dependency – obsługa tokenów Cognito i Apple
+# ------------------------------------------------------------
 async def get_current_user(request: Request, creds: HTTPAuthorizationCredentials = Depends(oauth2_scheme)):
     """
-    FastAPI dependency – weryfikuje token JWT i zwraca claims (sub, email, itp.).
+    FastAPI dependency – próbuje zweryfikować token JWT najpierw jako token Cognito,
+    a w przypadku niepowodzenia – jako token Apple.
     """
     token = creds.credentials
-    decoded = verify_jwt_token(token)
-    return decoded
+    try:
+        decoded = verify_jwt_token(token)
+        return decoded
+    except HTTPException as e_cognito:
+        logger.info("Weryfikacja tokena jako Cognito nie powiodła się, próba jako Apple...")
+        try:
+            decoded = verify_apple_jwt_token(token)
+            return decoded
+        except HTTPException as e_apple:
+            logger.error("Token niepoprawny dla Cognito ani Apple: Cognito: %s, Apple: %s", e_cognito.detail,
+                         e_apple.detail)
+            raise HTTPException(status_code=401, detail="Niepoprawny token.")
+
 
 def get_or_create_user_by_sub(sub: str, email: str) -> int:
     """
-    Zwraca ID użytkownika w tabeli "User" na podstawie sub z Cognito.
-    Jeśli nie istnieje, tworzy nowego usera i zwraca ID.
+    Zwraca ID użytkownika w tabeli "User" na podstawie sub (Cognito lub Apple).
+    Jeśli nie istnieje, tworzy nowego użytkownika i zwraca ID.
     """
     conn = get_db_connection()
     cur = conn.cursor()
@@ -336,10 +421,10 @@ def get_or_create_user_by_sub(sub: str, email: str) -> int:
         cur.close()
         conn.close()
 
+
 # ------------------------------------------------------------
 # 3. Stare endpointy (opcjonalne) - rejestracja, subskrypcje, cele
 # ------------------------------------------------------------
-
 @app.post("/register")
 def register_user(email: str = Form(...), password: str = Form(...)):
     """
@@ -372,6 +457,7 @@ def register_user(email: str = Form(...), password: str = Form(...)):
         cur.close()
         conn.close()
 
+
 @app.post("/buy_subscription")
 def buy_subscription(user_id: int = Form(...), subscription_type: int = Form(...),
                      start_date: date = Form(...), end_date: date = Form(...)):
@@ -397,6 +483,7 @@ def buy_subscription(user_id: int = Form(...), subscription_type: int = Form(...
     finally:
         cur.close()
         conn.close()
+
 
 @app.post("/set_goal")
 def set_goal(user_id: int = Form(...), kcal: int = Form(...), goal_type: int = Form(...)):
@@ -437,10 +524,10 @@ def set_goal(user_id: int = Form(...), kcal: int = Form(...), goal_type: int = F
         cur.close()
         conn.close()
 
-# ------------------------------------------------------------
-# 4. Endpoint add_meal (TYLKO Cognito) - makra = -1, potem update
-# ------------------------------------------------------------
 
+# ------------------------------------------------------------
+# 4. Endpoint add_meal – działający dla tokenów Cognito oraz Apple
+# ------------------------------------------------------------
 @app.post("/add_meal")
 def add_meal(
         current_user: dict = Depends(get_current_user),
@@ -450,7 +537,7 @@ def add_meal(
         image: UploadFile = File(...)
 ):
     """
-    Dodawanie posiłku przez zalogowanego użytkownika (Cognito) z wykorzystaniem obrazu:
+    Dodawanie posiłku przez zalogowanego użytkownika (Cognito lub Apple) z wykorzystaniem obrazu:
     1) Zapis oryginalnego obrazu w S3 – klucz obrazu zapisywany jest w bazie,
     2) Utworzenie rekordu w Meal z placeholderem makroskładników (-1),
     3) Wywołanie OpenAI z wykorzystaniem obrazu – obraz przeskalowany do maksymalnych rozmiarów 512x1024,
@@ -506,16 +593,12 @@ def add_meal(
                 return {"message": "Przekroczono dzienny limit zapytań do OpenAI.", "allowed": False}
 
         original_file_contents = image.file.read()
-
         file_name = f"{user_id}_{int(now.timestamp())}_{image.filename}"
         s3.put_object(
             Bucket=S3_BUCKET_NAME,
             Key=file_name,
             Body=original_file_contents
         )
-
-        from PIL import Image
-        import io
 
         image_stream = io.BytesIO(original_file_contents)
         img = Image.open(image_stream)
@@ -642,14 +725,14 @@ def add_meal(
         except:
             pass
 
-# ------------------------------------------------------------
-# 5. Pobieranie posiłków (Cognito) - secure_meals_by_day
-# ------------------------------------------------------------
 
+# ------------------------------------------------------------
+# 5. Pobieranie posiłków (Cognito lub Apple) - secure_meals_by_day
+# ------------------------------------------------------------
 @app.get("/secure_meals_by_day")
 def secure_meals_by_day(current_user: dict = Depends(get_current_user)):
     """
-    Pobiera posiłki z podziałem na dni dla zalogowanego użytkownika (Cognito).
+    Pobiera posiłki z podziałem na dni dla zalogowanego użytkownika (Cognito lub Apple).
     Dla każdego posiłku generowany jest tymczasowy (presigned) URL obrazu, ważny przez 1 godzinę.
     """
     try:
@@ -706,16 +789,15 @@ def secure_meals_by_day(current_user: dict = Depends(get_current_user)):
         cur.close()
         conn.close()
 
-# ------------------------------------------------------------
-# 6. Edycja posiłku (Cognito) - zmiana pola 'added'
-# ------------------------------------------------------------
 
+# ------------------------------------------------------------
+# 6. Edycja posiłku (Cognito lub Apple) - zmiana pola 'added'
+# ------------------------------------------------------------
 @app.put("/secure_edit_meal/{meal_id}")
 def secure_edit_meal(meal_id: int, current_user: dict = Depends(get_current_user)):
     """
     Edycja posiłku – zmiana pola 'added' na true.
-    Endpoint chroniony przez Cognito; edycja możliwa tylko, gdy posiłek
-    należy do zalogowanego użytkownika.
+    Endpoint chroniony – edycja możliwa tylko, gdy posiłek należy do zalogowanego użytkownika.
     """
     try:
         sub = current_user["sub"]
