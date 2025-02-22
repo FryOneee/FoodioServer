@@ -612,7 +612,7 @@ def add_meal(
                 WHERE User_ID = %s AND date::date = %s
             """, (user_id, today))
             count_requests = cur.fetchone()[0]
-            if count_requests >= 3:
+            if count_requests >= 50:
                 logger.info("Dzienny limit zapytań przekroczony dla user_id: %s", user_id)
                 return {"message": "Przekroczono dzienny limit zapytań do OpenAI.", "allowed": False}
 
