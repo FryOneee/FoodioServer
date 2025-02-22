@@ -829,11 +829,11 @@ def secure_meals_by_day(current_user: dict = Depends(get_current_user)):
 # ------------------------------------------------------------
 # 6. Edycja posiłku (Cognito lub Apple) - zmiana pola 'added'
 # ------------------------------------------------------------
-@app.put("/secure_edit_meal/{meal_id}")
-def secure_edit_meal(meal_id: int, current_user: dict = Depends(get_current_user)):
+@app.get("/secure_meals_by_day")
+def secure_meals_by_day(current_user: dict = Depends(get_current_user)):
     """
-    Edycja posiłku – zmiana pola 'added' na true.
-    Endpoint chroniony – edycja możliwa tylko, gdy posiłek należy do zalogowanego użytkownika.
+    Pobiera posiłki z podziałem na dni dla zalogowanego użytkownika (Cognito lub Apple).
+    Zwraca wszystkie kolumny z tabeli Meal, a w polu 'img_link' generowany jest tymczasowy (presigned) URL.
     """
     try:
         sub = current_user["sub"]
@@ -843,21 +843,52 @@ def secure_edit_meal(meal_id: int, current_user: dict = Depends(get_current_user
         conn = get_db_connection()
         cur = conn.cursor()
 
-        cur.execute("SELECT User_ID FROM Meal WHERE ID = %s", (meal_id,))
-        row = cur.fetchone()
-        if not row:
-            logger.warning("Posiłek o ID %s nie został znaleziony.", meal_id)
-            raise HTTPException(status_code=404, detail="Posiłek nie został znaleziony.")
-        if row[0] != user_id:
-            logger.warning("Użytkownik %s próbuje edytować posiłek, który nie należy do niego.", user_id)
-            raise HTTPException(status_code=403, detail="Brak uprawnień do edycji tego posiłku.")
+        # Pobieramy wszystkie kolumny z tabeli Meal dla danego użytkownika
+        cur.execute("SELECT * FROM Meal WHERE User_ID = %s ORDER BY date DESC", (user_id,))
+        rows = cur.fetchall()
 
-        cur.execute("UPDATE Meal SET added = true WHERE ID = %s", (meal_id,))
-        conn.commit()
-        logger.info("Zaktualizowano posiłek (meal_id: %s) dla user_id: %s", meal_id, user_id)
-        return {"message": "Posiłek został zaktualizowany, pole 'added' ustawione na true."}
+        meals_by_day = {}
+        for row in rows:
+            # Kolumny zgodnie z definicją tabeli Meal:
+            # 0: ID, 1: User_ID, 2: meal_name, 3: img_link, 4: kcal, 5: proteins, 6: carbs, 7: fats,
+            # 8: date, 9: healthy_index, 10: latitude, 11: longitude, 12: added
+            meal_date = row[8]
+            day_str = meal_date.date().isoformat() if isinstance(meal_date, datetime) else str(meal_date)
+            # Generujemy presigned URL dla obrazu
+            presigned_url = s3.generate_presigned_url(
+                'get_object',
+                Params={'Bucket': S3_BUCKET_NAME, 'Key': row[3]},
+                ExpiresIn=3600
+            )
+            meal_data = {
+                "id": row[0],
+                "user_id": row[1],
+                "meal_name": row[2],
+                "img_link": presigned_url,
+                "kcal": row[4],
+                "proteins": row[5],
+                "carbs": row[6],
+                "fats": row[7],
+                "date": meal_date.isoformat() if isinstance(meal_date, datetime) else meal_date,
+                "healthy_index": row[9],
+                "latitude": str(row[10]),
+                "longitude": str(row[11]),
+                "added": row[12]
+            }
+            if day_str not in meals_by_day:
+                meals_by_day[day_str] = []
+            meals_by_day[day_str].append(meal_data)
+
+        result = []
+        for day, meals in meals_by_day.items():
+            result.append({
+                "day": day,
+                "meals": meals
+            })
+        logger.info("Pobrano posiłki dla user_id: %s", user_id)
+        return result
     except Exception as e:
-        logger.error("Błąd przy edycji posiłku: %s", e)
+        logger.error("Błąd przy pobieraniu posiłków: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         cur.close()
