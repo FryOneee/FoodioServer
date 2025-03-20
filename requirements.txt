@@ -7,3 +7,4 @@ requests==2.31.0
 python-jose==3.3.0
 python-multipart==0.0.5
 Pillow==9.5.0
+jwt

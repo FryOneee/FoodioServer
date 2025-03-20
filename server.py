@@ -573,7 +573,7 @@ def add_meal(
 
     Limity zapytań:
       - dla subskrybentów: 5 zapytań na godzinę,
-      - dla użytkowników bez subskrypcji: 3 zapytań dziennie.
+      - dla użytkowników bez subskrypcji: 50 zapytań dziennie.
     """
     try:
         sub = current_user["sub"]
@@ -676,10 +676,7 @@ def add_meal(
                     "role": "user",
                     "content": [
                         {"type": "text", "text": (
-                            "Proszę oszacować wartości makroskładników na podstawie obrazu. "
-                            "Podaj wynik w formacie JSON, zawierający dokładnie klucze: "
-                            "'name', 'kcal', 'proteins', 'carbs', 'fats', 'healthy_index'. "
-                            "Nie dodawaj żadnego dodatkowego tekstu."
+                            "Estimate the macronutrient values based on the image. Provide the result in JSON format, containing exactly the keys: ‘name’, ‘kcal’, ‘proteins’, ‘carbs’, ‘fats’, ‘healthy_index’. Do not add any additional text."
                         )},
                         {
                             "type": "image_url",
@@ -727,6 +724,27 @@ def add_meal(
         """, (name_val, kcal_val, proteins_val, carbs_val, fats_val, healthy_index_val, meal_id))
         conn.commit()
 
+        # Pobieramy zaktualizowany rekord posiłku
+        cur.execute("""
+            SELECT ID, meal_name, img_link, kcal, proteins, carbs, fats, healthy_index, latitude, longitude, date, added
+            FROM Meal WHERE ID = %s
+        """, (meal_id,))
+        updated_meal = cur.fetchone()
+        meal_data = {
+            "id": updated_meal[0],
+            "meal_name": updated_meal[1],
+            "img_link": updated_meal[2],
+            "kcal": updated_meal[3],
+            "proteins": updated_meal[4],
+            "carbs": updated_meal[5],
+            "fats": updated_meal[6],
+            "healthy_index": updated_meal[7],
+            "latitude": str(updated_meal[8]),
+            "longitude": str(updated_meal[9]),
+            "date": updated_meal[10].isoformat() if isinstance(updated_meal[10], datetime) else updated_meal[10],
+            "added": updated_meal[11]
+        }
+
         cur.execute("""
             INSERT INTO OpenAI_request(User_ID, Meal_ID, img_link, date)
             VALUES (%s, %s, %s, %s)
@@ -738,14 +756,9 @@ def add_meal(
         logger.info("Dodano posiłek (meal_id: %s) dla user_id: %s", meal_id, user_id)
         return {
             "message": "Dodano posiłek i zaktualizowano dane makroskładników przez OpenAI.",
-            "meal_id": meal_id,
+            "meal": meal_data,
             "openai_request_id": openai_req_id,
-            "openai_result": openai_result_text,
-            "updated_kcal": kcal_val,
-            "updated_proteins": proteins_val,
-            "updated_carbs": carbs_val,
-            "updated_fats": fats_val,
-            "updated_healthy_index": healthy_index_val
+            "openai_result": openai_result_text
         }
 
     except Exception as e:
@@ -797,6 +810,7 @@ def secure_meals_by_day(current_user: dict = Depends(get_current_user)):
             )
             meal_data = {
                 "meal_id": row[1],
+                "meal_name": row[2],
                 "img_link": presigned_url,
                 "kcal": row[3],
                 "proteins": row[4],
