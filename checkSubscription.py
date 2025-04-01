@@ -15,17 +15,28 @@ from config import (
 )
 
 logger = logging.getLogger("server_logger")
+_cached_apple_jwt = None
+_cached_apple_jwt_exp = 0
 
 def create_apple_jwt() -> str:
+    global _cached_apple_jwt, _cached_apple_jwt_exp
+    current_time = int(time.time())
+    # Reuse the token if it's still valid (with a 60-second buffer before expiration)
+    if _cached_apple_jwt and current_time < _cached_apple_jwt_exp - 60:
+        return _cached_apple_jwt
+
     private_key = APPLE_PRIVATE_KEY
     headers = {"alg": "ES256", "kid": APPLE_KEY_ID}
     payload = {
         "iss": APPLE_ISSUER_ID,
-        "iat": int(time.time()),
-        "exp": int(time.time()) + 15777000,
+        "iat": current_time,
+        "exp": current_time + 15777000,
         "aud": "appstoreconnect-v1"
     }
-    return jwt.encode(payload, private_key, algorithm="ES256", headers=headers)
+    token = jwt.encode(payload, private_key, algorithm="ES256", headers=headers)
+    _cached_apple_jwt = token
+    _cached_apple_jwt_exp = current_time + 15777000
+    return token
 
 def verify_apple_subscribe_active(original_transaction_id: str) -> bool:
     token = create_apple_jwt()

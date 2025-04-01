@@ -1,4 +1,3 @@
-# endpoints.py
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Depends, Request
 from datetime import datetime, date, timedelta
 from psycopg2.extras import RealDictCursor
@@ -10,15 +9,16 @@ import logging
 from PIL import Image
 import openai
 import boto3
+import requests
 
 from auth import get_current_user
 from db import get_db_connection, get_or_create_user_by_sub
 from config import S3_BUCKET_NAME, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION, OPENAI_API_KEY
 from config import USER_POOL_ID
 
-
 from checkSubscription import check_subscription_add_meal, verify_apple_subscribe_active, decode_apple_receipt
-from OpenAI_requests import query_meal_nutrients, new_goal
+from OpenAI_requests import query_meal_nutrients, new_goal, meals_from_barcode_problems
+from openfoodfacts_api import getInfoFromOpenFoodsApi
 
 router = APIRouter()
 logger = logging.getLogger("server_logger")
@@ -31,6 +31,7 @@ s3 = boto3.client(
     region_name=AWS_REGION
 )
 openai.api_key = OPENAI_API_KEY
+
 
 @router.post("/register")
 def register_user(email: str = Form(...), password: str = Form(...)):
@@ -45,10 +46,10 @@ def register_user(email: str = Form(...), password: str = Form(...)):
             raise HTTPException(status_code=400, detail="Użytkownik o podanym email już istnieje.")
 
         cur.execute("""
-            INSERT INTO "User"(email, password,dateOfJoin)
-            VALUES (%s, %s,%s)
+            INSERT INTO "User"(email, password, dateOfJoin)
+            VALUES (%s, %s, %s)
             RETURNING ID
-        """, (email, password,date.today()))
+        """, (email, password, date.today()))
         new_id = cur.fetchone()[0]
         conn.commit()
         logger.info("Zarejestrowano użytkownika: %s", email)
@@ -59,6 +60,7 @@ def register_user(email: str = Form(...), password: str = Form(...)):
     finally:
         cur.close()
         conn.close()
+
 
 @router.post("/delete_account")
 def delete_account(current_user: dict = Depends(get_current_user)):
@@ -114,7 +116,6 @@ def buy_subscription(
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    # Dodajemy sprawdzenie aktywności subskrypcji
     if not verify_apple_subscribe_active(original_transaction_id):
         raise HTTPException(status_code=403, detail="Subskrypcja nieaktywna wg Apple")
 
@@ -123,10 +124,8 @@ def buy_subscription(
     user_id = get_or_create_user_by_sub(sub, email)
 
     conn = get_db_connection()
-
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            # Upsert subscription
             cur.execute("""
                 INSERT INTO Subscription (User_ID, subscription_type, original_transaction_id, isActive)
                 VALUES (%s, %s, %s, 'Y')
@@ -145,13 +144,13 @@ def buy_subscription(
     return {"success": True, "original_transaction_id": original_transaction_id}
 
 
-@router.post("/add_meal")
-def add_meal(
+@router.post("/add_meal_from_barcode")
+def add_meal_from_barcode(
         current_user: dict = Depends(get_current_user),
         latitude: float = Form(...),
         longitude: float = Form(...),
-        apple_receipt: str = Form(...),   # <-- Nowy parametr z paragonem Apple
-        image: UploadFile = File(...)
+        apple_receipt: str = Form(...),
+        barcode: str = File(...)
 ):
     try:
         sub = current_user["sub"]
@@ -166,21 +165,45 @@ def add_meal(
 
         original_transaction_id = decode_apple_receipt(apple_receipt)
 
-        # --- 1. Sprawdź subskrypcję i ewentualne limity ---
+        # Sprawdzenie subskrypcji i limitów
         subscription_response = check_subscription_add_meal(cur, user_id, now, today, original_transaction_id)
         if subscription_response is not None:
-            # Jeśli funkcja zwróciła błąd, odsyłamy go do klienta
             conn.rollback()
             return subscription_response
 
-        # --- 2. Zapisujemy obraz do S3, tworzymy miniaturę, pobieramy URL itd. ---
-        original_file_contents = image.file.read()
-        file_name = f"{user_id}_{int(now.timestamp())}_{image.filename}"
-        s3.put_object(
-            Bucket=S3_BUCKET_NAME,
-            Key=file_name,
-            Body=original_file_contents
-        )
+        # Pobranie kontekstu użytkownika (problemy, dieta)
+        cur.execute("SELECT description FROM Problem WHERE User_ID = %s LIMIT 7", (user_id,))
+        problems_rows = cur.fetchall()
+        user_problems = [row[0] for row in problems_rows] if problems_rows else []
+
+        # Zmiana: pobieramy dietę z tabeli "User"
+        cur.execute("SELECT diet FROM \"User\" WHERE ID = %s", (user_id,))
+        diet_row = cur.fetchone()
+        user_diet = diet_row[0] if diet_row and diet_row[0] is not None else ""
+
+        user_context = {
+            "problems": user_problems,
+            "diet": user_diet
+        }
+
+        # Pobranie danych z OpenFoodsAPI
+        name, kcal, proteins, carbs, fats, ingredients, image_front_url = getInfoFromOpenFoodsApi(barcode)
+
+        if len(ingredients) > 0:
+            problems_result, _ = meals_from_barcode_problems(name, ingredients, user_context)
+        else:
+            problems_result = {"healthy_index": -1, "problems": []}
+
+        healthy_index_val = problems_result.get("healthy_index", -1)
+        problems_val = problems_result.get("problems", [])
+
+        image_response = requests.get(image_front_url)
+        if image_response.status_code != 200:
+            raise Exception("Błąd pobierania obrazka z URL-a.")
+        original_file_contents = image_response.content
+
+        file_name = f"{user_id}_{int(now.timestamp())}_{name.replace(' ', '_')}.png"
+        s3.put_object(Bucket=S3_BUCKET_NAME, Key=file_name, Body=original_file_contents)
 
         image_stream = io.BytesIO(original_file_contents)
         img = Image.open(image_stream)
@@ -196,32 +219,141 @@ def add_meal(
         resized_image_bytes = buf.getvalue()
 
         resized_file_name = f"resized_{file_name}"
-        s3.put_object(
-            Bucket=S3_BUCKET_NAME,
-            Key=resized_file_name,
-            Body=resized_image_bytes
-        )
+        s3.put_object(Bucket=S3_BUCKET_NAME, Key=resized_file_name, Body=resized_image_bytes)
         presigned_url = s3.generate_presigned_url(
-            'get_object',
-            Params={'Bucket': S3_BUCKET_NAME, 'Key': resized_file_name},
-            ExpiresIn=300
+            'get_object', Params={'Bucket': S3_BUCKET_NAME, 'Key': resized_file_name}, ExpiresIn=300
         )
 
-        # --- 3. Pobieramy kontekst użytkownika z bazy (problemy, dietę) ---
+        # Zapis nowych problemów
+        problems_with_id = []
+        for problem in problems_val:
+            cur.execute("INSERT INTO Problem (User_ID, description) VALUES (%s, %s) RETURNING ID", (user_id, problem))
+            problem_id = cur.fetchone()[0]
+            problems_with_id.append({"id": problem_id, "description": problem})
+        conn.commit()
+
+        cur.execute("""
+            INSERT INTO Meal(
+                User_ID, name, barcode, img_link, kcal, proteins, carbs, fats, date, healthy_index, latitude, longitude, added
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING ID
+        """, (
+        user_id, name, barcode, file_name, kcal, proteins, carbs, fats, now, healthy_index_val, latitude, longitude,
+        False))
+        meal_id = cur.fetchone()[0]
+        conn.commit()
+
+        meal_data = {
+            "id": meal_id,
+            "name": name,
+            "img_link": file_name,
+            "kcal": kcal,
+            "proteins": proteins,
+            "carbs": carbs,
+            "fats": fats,
+            "healthy_index": healthy_index_val,
+            "latitude": str(latitude),
+            "longitude": str(longitude),
+            "date": now.isoformat(),
+            "added": False,
+            "warnings": []
+        }
+
+        cur.execute("""
+            INSERT INTO OpenAI_request(User_ID, type, img_link, date)
+            VALUES (%s, %s, %s, %s)
+            RETURNING ID
+        """, (user_id, 'B', file_name, now))
+        openai_req_id = cur.fetchone()[0]
+        conn.commit()
+
+        logger.info("Dodano posiłek (meal_id: %s) dla user_id: %s", meal_id, user_id)
+        return {
+            "message": "Dodano posiłek i zaktualizowano dane makroskładników.",
+            "meal": meal_data,
+            "warnings": meal_data["warnings"],
+            "openai_request_id": openai_req_id,
+            "extracted_problems": problems_with_id
+        }
+
+    except Exception as e:
+        logger.error("Błąd przy dodawaniu posiłku: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@router.post("/add_meal_from_photo")
+def add_meal_from_photo(
+        current_user: dict = Depends(get_current_user),
+        latitude: float = Form(...),
+        longitude: float = Form(...),
+        apple_receipt: str = Form(...),
+        image: UploadFile = File(...)
+):
+    try:
+        sub = current_user["sub"]
+        email = current_user.get("email", "")
+        user_id = get_or_create_user_by_sub(sub, email)
+
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        now = datetime.now()
+        today = date.today()
+
+        original_transaction_id = decode_apple_receipt(apple_receipt)
+
+        subscription_response = check_subscription_add_meal(cur, user_id, now, today, original_transaction_id)
+        if subscription_response is not None:
+            conn.rollback()
+            return subscription_response
+
+        original_file_contents = image.file.read()
+        file_name = f"{user_id}_{int(now.timestamp())}_{image.filename}"
+        s3.put_object(Bucket=S3_BUCKET_NAME, Key=file_name, Body=original_file_contents)
+
+        image_stream = io.BytesIO(original_file_contents)
+        img = Image.open(image_stream)
+
+        max_size = (512, 1024)
+        img_for_openai = img.copy()
+        if img_for_openai.width > max_size[0] or img_for_openai.height > max_size[1]:
+            img_for_openai.thumbnail(max_size, Image.ANTIALIAS)
+
+        buf = io.BytesIO()
+        img_format = img.format if img.format else "PNG"
+        img_for_openai.save(buf, format=img_format)
+        resized_image_bytes = buf.getvalue()
+
+        resized_file_name = f"resized_{file_name}"
+        s3.put_object(Bucket=S3_BUCKET_NAME, Key=resized_file_name, Body=resized_image_bytes)
+        presigned_url = s3.generate_presigned_url(
+            'get_object', Params={'Bucket': S3_BUCKET_NAME, 'Key': resized_file_name}, ExpiresIn=300
+        )
+
         cur.execute("SELECT description FROM Problem WHERE User_ID = %s LIMIT 7", (user_id,))
         problems_rows = cur.fetchall()
         user_problems = [row[0] for row in problems_rows] if problems_rows else []
 
-        cur.execute("SELECT diet FROM Goal WHERE User_ID = %s ORDER BY startDate DESC LIMIT 1", (user_id,))
+        # Zmiana: pobieramy dietę z tabeli "User"
+        cur.execute("SELECT diet FROM \"User\" WHERE ID = %s", (user_id,))
         diet_row = cur.fetchone()
-        user_diet = diet_row[0] if diet_row else ""
+        user_diet = diet_row[0] if diet_row and diet_row[0] is not None else ""
 
         user_context = {
             "problems": user_problems,
             "diet": user_diet
         }
 
-        # --- 4. Wywołujemy ChatGPT (query_meal_nutrients) ---
         nutrients_dict, openai_result_text = query_meal_nutrients(presigned_url, user_context)
         name_val = nutrients_dict.get("name", "dish")
         kcal_val = nutrients_dict.get("kcal", -1)
@@ -231,7 +363,6 @@ def add_meal(
         healthy_index_val = nutrients_dict.get("healthy_index", -1)
         problems_val = nutrients_dict.get("problems", [])
 
-        # --- 5. Dodaj nowe problemy (jeśli ChatGPT wykrył) i zwróć id ---
         problems_with_id = []
         for problem in problems_val:
             cur.execute("INSERT INTO Problem (User_ID, description) VALUES (%s, %s) RETURNING ID", (user_id, problem))
@@ -239,41 +370,26 @@ def add_meal(
             problems_with_id.append({"id": problem_id, "description": problem})
         conn.commit()
 
-        # --- 6. Wstawiamy rekord do tabeli Meal ---
         cur.execute("""
             INSERT INTO Meal(
-                User_ID,
-                bar_code,
-                img_link,
-                kcal,
-                proteins,
-                carbs,
-                fats,
-                date,
-                healthy_index,
-                latitude,
-                longitude,
-                added
+                User_ID, name, img_link, kcal, proteins, carbs, fats, date, healthy_index, latitude, longitude, added
             )
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING ID
         """, (
-            user_id, name_val, file_name, kcal_val,
-            proteins_val, carbs_val, fats_val,
-            now, healthy_index_val, latitude, longitude, False
-        ))
+        user_id, name_val, file_name, kcal_val, proteins_val, carbs_val, fats_val, now, healthy_index_val, latitude,
+        longitude, False))
         meal_id = cur.fetchone()[0]
         conn.commit()
 
-        # Odczyt nowego posiłku
         cur.execute("""
-            SELECT ID, bar_code, img_link, kcal, proteins, carbs, fats, healthy_index, latitude, longitude, date, added
+            SELECT ID, name, img_link, kcal, proteins, carbs, fats, healthy_index, latitude, longitude, date, added
             FROM Meal WHERE ID = %s
         """, (meal_id,))
         updated_meal = cur.fetchone()
         meal_data = {
             "id": updated_meal[0],
-            "bar_code": updated_meal[1],
+            "name": updated_meal[1],
             "img_link": updated_meal[2],
             "kcal": updated_meal[3],
             "proteins": updated_meal[4],
@@ -285,13 +401,11 @@ def add_meal(
             "date": updated_meal[10].isoformat() if isinstance(updated_meal[10], datetime) else updated_meal[10],
             "added": updated_meal[11]
         }
-        # Pobierz warningi dla nowego posiłku
         cur.execute("SELECT warning FROM Warning WHERE Meal_ID = %s", (meal_id,))
         warning_rows = cur.fetchall()
         warnings = [row[0] for row in warning_rows] if warning_rows else []
         meal_data["warnings"] = warnings
 
-        # --- 7. Na koniec wstawiamy rekord do OpenAI_request (zliczanie zapytań) ---
         cur.execute("""
             INSERT INTO OpenAI_request(User_ID, type, img_link, date)
             VALUES (%s, %s, %s, %s)
@@ -307,7 +421,7 @@ def add_meal(
             "warnings": meal_data["warnings"],
             "openai_request_id": openai_req_id,
             "openai_result": openai_result_text,
-        "extracted_problems": problems_with_id
+            "extracted_problems": problems_with_id
         }
 
     except Exception as e:
@@ -381,6 +495,7 @@ def secure_meals_by_day(current_user: dict = Depends(get_current_user)):
         cur.close()
         conn.close()
 
+
 @router.get("/secure_meals_by_day/detailed")
 def secure_meals_detailed(current_user: dict = Depends(get_current_user)):
     try:
@@ -391,14 +506,11 @@ def secure_meals_detailed(current_user: dict = Depends(get_current_user)):
         conn = get_db_connection()
         cur = conn.cursor()
 
-        # Pobranie posiłków dla użytkownika
         cur.execute("SELECT * FROM Meal WHERE User_ID = %s ORDER BY date DESC", (user_id,))
         rows = cur.fetchall()
 
-        # Pobranie identyfikatorów posiłków
         meal_ids = [row[0] for row in rows]
 
-        # Pobranie ostrzeżeń dla posiłków
         warnings_dict = {}
         if meal_ids:
             cur.execute("SELECT Meal_ID, warning FROM Warning WHERE Meal_ID = ANY(%s)", (meal_ids,))
@@ -410,18 +522,18 @@ def secure_meals_detailed(current_user: dict = Depends(get_current_user)):
 
         meals_by_day = {}
         for row in rows:
-            meal_date = row[8]  # kolumna date
+            meal_date = row[8]
             day_str = meal_date.date().isoformat() if isinstance(meal_date, datetime) else str(meal_date)
             presigned_url = s3.generate_presigned_url(
                 'get_object',
-                Params={'Bucket': S3_BUCKET_NAME, 'Key': row[3]},  # kolumna img_link
+                Params={'Bucket': S3_BUCKET_NAME, 'Key': row[3]},
                 ExpiresIn=3600
             )
             meal_id = row[0]
             meal_data = {
                 "id": meal_id,
                 "user_id": row[1],
-                "bar_code": row[2],  # zamiast meal_name
+                "bar_code": row[2],
                 "img_link": presigned_url,
                 "kcal": row[4],
                 "proteins": row[5],
@@ -452,19 +564,7 @@ def secure_meals_detailed(current_user: dict = Depends(get_current_user)):
     finally:
         cur.close()
         conn.close()
-        # def add_meal(
-        #         current_user: dict = Depends(get_current_user),
-        #         latitude: float = Form(...),
-        #         longitude: float = Form(...),
-        #         image: UploadFile = File(...)
-        # ):
 
-# @router.get("/example")
-# def example(
-#         current_user: dict = Depends(get_current_user)
-# ):
-#     try:
-#     except Exception as e:
 
 @router.get("/edit_isAdded_true")
 def edit_isAdded_true(
@@ -472,25 +572,18 @@ def edit_isAdded_true(
         meal_idx: int = Form(...)
 ):
     try:
-        # Retrieve the current user information
         sub = current_user["sub"]
         email = current_user.get("email", "")
         user_id = get_or_create_user_by_sub(sub, email)
 
-        # Connect to the database
         conn = get_db_connection()
         cur = conn.cursor()
 
-        # Update the 'added' field to True for the specified meal, ensuring it belongs to the current user
-        cur.execute(
-            "UPDATE Meal SET added = TRUE WHERE ID = %s AND User_ID = %s",
-            (meal_idx, user_id)
-        )
+        cur.execute("UPDATE Meal SET added = TRUE WHERE ID = %s AND User_ID = %s", (meal_idx, user_id))
         if cur.rowcount == 0:
             raise HTTPException(status_code=404, detail="Meal not found or unauthorized")
         conn.commit()
 
-        # Retrieve the updated meal record
         cur.execute("SELECT ID, added FROM Meal WHERE ID = %s", (meal_idx,))
         updated = cur.fetchone()
 
@@ -512,32 +605,24 @@ def edit_isAdded_true(
             pass
 
 
-
 @router.get("/edit_isAdded_false")
-def edit_isAdded_true(
+def edit_isAdded_false(
         current_user: dict = Depends(get_current_user),
         meal_idx: int = Form(...)
 ):
     try:
-        # Retrieve the current user information
         sub = current_user["sub"]
         email = current_user.get("email", "")
         user_id = get_or_create_user_by_sub(sub, email)
 
-        # Connect to the database
         conn = get_db_connection()
         cur = conn.cursor()
 
-        # Update the 'added' field to True for the specified meal, ensuring it belongs to the current user
-        cur.execute(
-            "UPDATE Meal SET added = FALSE WHERE ID = %s AND User_ID = %s",
-            (meal_idx, user_id)
-        )
+        cur.execute("UPDATE Meal SET added = FALSE WHERE ID = %s AND User_ID = %s", (meal_idx, user_id))
         if cur.rowcount == 0:
             raise HTTPException(status_code=404, detail="Meal not found or unauthorized")
         conn.commit()
 
-        # Retrieve the updated meal record
         cur.execute("SELECT ID, added FROM Meal WHERE ID = %s", (meal_idx,))
         updated = cur.fetchone()
 
@@ -557,7 +642,6 @@ def edit_isAdded_true(
             conn.close()
         except Exception:
             pass
-
 
 
 @router.get("/get_user_info")
@@ -565,23 +649,17 @@ def get_user_info(
         current_user: dict = Depends(get_current_user)
 ):
     try:
-        # Retrieve the current user information from the token
         sub = current_user["sub"]
         email = current_user.get("email", "")
         user_id = get_or_create_user_by_sub(sub, email)
 
-        # Connect to the database and query the "User" table for the required fields
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute(
-            'SELECT email, sex, birthDate, height, dateOfJoin FROM "User" WHERE ID = %s',
-            (user_id,)
-        )
+        cur.execute('SELECT email, sex, birthDate, height, dateOfJoin FROM "User" WHERE ID = %s', (user_id,))
         user_info = cur.fetchone()
         if user_info is None:
             raise HTTPException(status_code=404, detail="User not found")
 
-        # Prepare the response, converting dates to ISO format if they are not None
         response_data = {
             "email": user_info[0],
             "sex": user_info[1],
@@ -610,12 +688,10 @@ def get_goal(
         meal_idx: int = Form(...)
 ):
     try:
-        # Retrieve the current user information from the token
         sub = current_user["sub"]
         email = current_user.get("email", "")
         user_id = get_or_create_user_by_sub(sub, email)
 
-        # Connect to the database and query the Goal table for the specified goal belonging to the user
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute(
@@ -658,19 +734,19 @@ def update_sex(
         sex: str = Form(...)
 ):
     try:
-        # Pobranie identyfikatora użytkownika
         sub = current_user["sub"]
         email = current_user.get("email", "")
         user_id = get_or_create_user_by_sub(sub, email)
         if sex not in ("W", "M", "X"):
-            raise HTTPException(status_code=400, detail="Nieprawidłowa wartość dla pola sex. Dozwolone wartości to: W, M, X.")
+            raise HTTPException(status_code=400,
+                                detail="Nieprawidłowa wartość dla pola sex. Dozwolone wartości to: W, M, X.")
         conn = get_db_connection()
         cur = conn.cursor()
 
-        # Aktualizacja pola sex
         cur.execute('UPDATE "User" SET sex = %s WHERE ID = %s', (sex, user_id))
         if cur.rowcount == 0:
-            raise HTTPException(status_code=404, detail="Użytkownik nie został znaleziony lub aktualizacja nie powiodła się")
+            raise HTTPException(status_code=404,
+                                detail="Użytkownik nie został znaleziony lub aktualizacja nie powiodła się")
         conn.commit()
         logger.info("Zaktualizowano pole sex dla user_id: %s", user_id)
         return {"message": "Pole sex zostało zaktualizowane.", "user_id": user_id, "sex": sex}
@@ -694,12 +770,10 @@ def update_birthDate(
         birth_date: date = Form(...)
 ):
     try:
-        # Pobranie identyfikatora użytkownika
         sub = current_user["sub"]
         email = current_user.get("email", "")
         user_id = get_or_create_user_by_sub(sub, email)
 
-        # Walidacja: data urodzenia nie może być wcześniejsza niż 1 stycznia 1900
         if birth_date < date(1900, 1, 1):
             raise HTTPException(
                 status_code=400,
@@ -709,13 +783,14 @@ def update_birthDate(
         conn = get_db_connection()
         cur = conn.cursor()
 
-        # Aktualizacja pola birthDate
         cur.execute('UPDATE "User" SET birthDate = %s WHERE ID = %s', (birth_date, user_id))
         if cur.rowcount == 0:
-            raise HTTPException(status_code=404, detail="Użytkownik nie został znaleziony lub aktualizacja nie powiodła się")
+            raise HTTPException(status_code=404,
+                                detail="Użytkownik nie został znaleziony lub aktualizacja nie powiodła się")
         conn.commit()
         logger.info("Zaktualizowano pole birthDate dla user_id: %s", user_id)
-        return {"message": "Pole birthDate zostało zaktualizowane.", "user_id": user_id, "birth_date": birth_date.isoformat()}
+        return {"message": "Pole birthDate zostało zaktualizowane.", "user_id": user_id,
+                "birth_date": birth_date.isoformat()}
     except Exception as e:
         logger.error("Błąd przy aktualizacji pola birthDate: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
@@ -736,12 +811,10 @@ def update_height(
         height: int = Form(...)
 ):
     try:
-        # Pobranie identyfikatora użytkownika
         sub = current_user["sub"]
         email = current_user.get("email", "")
         user_id = get_or_create_user_by_sub(sub, email)
 
-        # Walidacja: height musi być w zakresie 50 - 250 cm
         if height < 50 or height > 250:
             raise HTTPException(
                 status_code=400,
@@ -751,7 +824,6 @@ def update_height(
         conn = get_db_connection()
         cur = conn.cursor()
 
-        # Aktualizacja pola height
         cur.execute('UPDATE "User" SET height = %s WHERE ID = %s', (height, user_id))
         if cur.rowcount == 0:
             raise HTTPException(status_code=404,
@@ -773,6 +845,41 @@ def update_height(
             pass
 
 
+
+@router.post("/update_diet")
+def update_diet(
+        current_user: dict = Depends(get_current_user),
+        diet: str = Form(...)
+):
+    try:
+        sub = current_user["sub"]
+        email = current_user.get("email", "")
+        user_id = get_or_create_user_by_sub(sub, email)
+
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        cur.execute('UPDATE "User" SET diet = %s WHERE ID = %s', (diet, user_id))
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Użytkownik nie został znaleziony lub aktualizacja nie powiodła się")
+        conn.commit()
+        logger.info("Zaktualizowano pole diet dla user_id: %s", user_id)
+        return {"message": "Pole diet zostało zaktualizowane.", "user_id": user_id, "diet": diet}
+    except Exception as e:
+        logger.error("Błąd przy aktualizacji pola diet: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+
 @router.post("/create_problem")
 def create_problem(
         current_user: dict = Depends(get_current_user),
@@ -786,7 +893,6 @@ def create_problem(
         conn = get_db_connection()
         cur = conn.cursor()
 
-        # Sprawdzenie, ile problemów posiada użytkownik
         cur.execute('SELECT COUNT(*) FROM Problem WHERE User_ID = %s', (user_id,))
         count = cur.fetchone()[0]
         if count >= 7:
@@ -810,11 +916,10 @@ def create_problem(
             pass
 
 
-@router.post("/update_problem/{problem_id}")
-def update_problem(
-        problem_id: int,
-        current_user: dict = Depends(get_current_user),
-        description: str = Form(...)
+@router.post("/update_problems")
+def update_problems(
+    current_user: dict = Depends(get_current_user),
+    problems: [str] = Form(...) #tuaj od chatagpt dostalem ze powinno byc List[str]
 ):
     try:
         sub = current_user["sub"]
@@ -824,18 +929,29 @@ def update_problem(
         conn = get_db_connection()
         cur = conn.cursor()
 
-        # Sprawdzenie, czy problem istnieje i należy do użytkownika
-        cur.execute('SELECT ID FROM Problem WHERE ID = %s AND User_ID = %s', (problem_id, user_id))
-        if not cur.fetchone():
-            raise HTTPException(status_code=404, detail="Problem nie został znaleziony lub nie należy do użytkownika.")
+        # Pobierz aktualne problemy użytkownika (id oraz description)
+        cur.execute("SELECT ID, description FROM Problem WHERE User_ID = %s", (user_id,))
+        existing_rows = cur.fetchall()
+        # Utwórz mapę: description -> id
+        existing_dict = {row[1]: row[0] for row in existing_rows}
+        existing_descriptions = set(existing_dict.keys())
+        provided_descriptions = set(problems)
 
-        cur.execute('UPDATE Problem SET description = %s WHERE ID = %s', (description, problem_id))
-        if cur.rowcount == 0:
-            raise HTTPException(status_code=404, detail="Aktualizacja nie powiodła się.")
+        # Usuń te problemy, które są w bazie, ale nie występują w przesłanej liście
+        for desc in existing_descriptions - provided_descriptions:
+            problem_id = existing_dict[desc]
+            cur.execute("DELETE FROM Problem WHERE ID = %s", (problem_id,))
+
+        # Wstaw nowe problemy, które są przesłane, ale nie istnieją w bazie
+        for desc in provided_descriptions - existing_descriptions:
+            cur.execute("INSERT INTO Problem (User_ID, description) VALUES (%s, %s) RETURNING ID", (user_id, desc))
+            new_id = cur.fetchone()[0]
+
         conn.commit()
-        return {"message": "Problem został zaktualizowany.", "problem_id": problem_id, "description": description}
+        return {"message": "Problemy zostały zaktualizowane.", "problems": list(provided_descriptions)}
     except Exception as e:
-        logger.error("Błąd przy aktualizacji problemu: %s", e)
+        conn.rollback()
+        logger.error("Błąd przy aktualizacji problemów: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         try:
@@ -861,7 +977,6 @@ def delete_problem(
         conn = get_db_connection()
         cur = conn.cursor()
 
-        # Sprawdzenie, czy problem istnieje i należy do użytkownika
         cur.execute('SELECT ID FROM Problem WHERE ID = %s AND User_ID = %s', (problem_id, user_id))
         if not cur.fetchone():
             raise HTTPException(status_code=404, detail="Problem nie został znaleziony lub nie należy do użytkownika.")
@@ -885,15 +1000,12 @@ def delete_problem(
             pass
 
 
-
-
 @router.post("/add_current_weight")
 def add_current_weight(
-    current_user: dict = Depends(get_current_user),
-    weight: float = Form(...)
+        current_user: dict = Depends(get_current_user),
+        weight: float = Form(...)
 ):
     try:
-        # Pobranie identyfikatora użytkownika
         sub = current_user["sub"]
         email = current_user.get("email", "")
         user_id = get_or_create_user_by_sub(sub, email)
@@ -901,7 +1013,6 @@ def add_current_weight(
         conn = get_db_connection()
         cur = conn.cursor()
 
-        # Dodanie wpisu w tabeli Weight z dzisiejszą datą
         today = date.today()
         cur.execute(
             'INSERT INTO Weight (User_ID, weight, date) VALUES (%s, %s, %s) RETURNING ID',
@@ -931,7 +1042,6 @@ def add_current_weight(
             pass
 
 
-
 @router.post("/update_goal_kcal")
 def update_goal_kcal(
         current_user: dict = Depends(get_current_user),
@@ -945,14 +1055,12 @@ def update_goal_kcal(
         conn = get_db_connection()
         cur = conn.cursor()
 
-        # Pobranie ostatniego celu dla użytkownika
         cur.execute("SELECT ID FROM Goal WHERE User_ID = %s ORDER BY ID DESC LIMIT 1", (user_id,))
         result = cur.fetchone()
         if not result:
             raise HTTPException(status_code=404, detail="Nie znaleziono celu dla użytkownika.")
         goal_id = result[0]
 
-        # Aktualizacja pola kcal
         cur.execute("UPDATE Goal SET kcal = %s WHERE ID = %s", (kcal, goal_id))
         if cur.rowcount == 0:
             raise HTTPException(status_code=404, detail="Aktualizacja nie powiodła się.")
@@ -985,14 +1093,12 @@ def update_goal_protein(
         conn = get_db_connection()
         cur = conn.cursor()
 
-        # Pobranie ostatniego celu dla użytkownika
         cur.execute("SELECT ID FROM Goal WHERE User_ID = %s ORDER BY ID DESC LIMIT 1", (user_id,))
         result = cur.fetchone()
         if not result:
             raise HTTPException(status_code=404, detail="Nie znaleziono celu dla użytkownika.")
         goal_id = result[0]
 
-        # Aktualizacja pola protein
         cur.execute("UPDATE Goal SET protein = %s WHERE ID = %s", (protein, goal_id))
         if cur.rowcount == 0:
             raise HTTPException(status_code=404, detail="Aktualizacja nie powiodła się.")
@@ -1025,14 +1131,12 @@ def update_goal_fats(
         conn = get_db_connection()
         cur = conn.cursor()
 
-        # Pobranie ostatniego celu dla użytkownika
         cur.execute("SELECT ID FROM Goal WHERE User_ID = %s ORDER BY ID DESC LIMIT 1", (user_id,))
         result = cur.fetchone()
         if not result:
             raise HTTPException(status_code=404, detail="Nie znaleziono celu dla użytkownika.")
         goal_id = result[0]
 
-        # Aktualizacja pola fats
         cur.execute("UPDATE Goal SET fats = %s WHERE ID = %s", (fats, goal_id))
         if cur.rowcount == 0:
             raise HTTPException(status_code=404, detail="Aktualizacja nie powiodła się.")
@@ -1065,14 +1169,12 @@ def update_goal_carbs(
         conn = get_db_connection()
         cur = conn.cursor()
 
-        # Pobranie ostatniego celu dla użytkownika
         cur.execute("SELECT ID FROM Goal WHERE User_ID = %s ORDER BY ID DESC LIMIT 1", (user_id,))
         result = cur.fetchone()
         if not result:
             raise HTTPException(status_code=404, detail="Nie znaleziono celu dla użytkownika.")
         goal_id = result[0]
 
-        # Aktualizacja pola carbs
         cur.execute("UPDATE Goal SET carbs = %s WHERE ID = %s", (carbs, goal_id))
         if cur.rowcount == 0:
             raise HTTPException(status_code=404, detail="Aktualizacja nie powiodła się.")
@@ -1106,7 +1208,6 @@ def create_goal(
         email = current_user.get("email", "")
         user_id = get_or_create_user_by_sub(sub, email)
 
-        # Pobranie danych użytkownika niezbędnych do zapytania do ChatGPT
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute('SELECT sex, birthDate, height FROM "User" WHERE ID = %s', (user_id,))
@@ -1117,7 +1218,19 @@ def create_goal(
             raise HTTPException(status_code=404, detail="Nie znaleziono danych użytkownika.")
         sex, birthDate, height = user_data
 
-        # Wywołanie funkcji new_goal, która zwróci rekomendacje kcal, proteins, carbs i fats
+        # Aktualizujemy dietę użytkownika w tabeli "User"
+        cur.execute('UPDATE "User" SET diet = %s WHERE ID = %s', (diet, user_id))
+
+        cur.execute("SELECT date FROM OpenAI_request WHERE User_ID = %s AND type = 'G' ORDER BY date DESC LIMIT 1",
+                    (user_id,))
+        last_request = cur.fetchone()
+        if last_request:
+            last_date = last_request[0]
+            if now - last_date < timedelta(weeks=1):
+                next_allowed = last_date + timedelta(weeks=1)
+                raise HTTPException(status_code=400,
+                                    detail=f"Możesz utworzyć cel tylko raz w tygodniu. Następna próba: {next_allowed.isoformat()}")
+
         nutrients, raw_response = new_goal(sex, birthDate, height, lifestyle, diet, str(startDate), str(endDate))
 
         cur.execute("""
@@ -1128,22 +1241,20 @@ def create_goal(
         openai_req_id = cur.fetchone()[0]
         conn.commit()
 
-        # Mapowanie klucza 'proteins' do pola 'protein' w bazie
         kcal = nutrients.get("kcal", -1)
         protein = nutrients.get("proteins", -1)
         fats = nutrients.get("fats", -1)
         carbs = nutrients.get("carbs", -1)
 
+        # Wstawiamy rekord do tabeli Goal – kolumna diet została usunięta, gdyż dieta jest teraz w tabeli "User"
         insert_query = """
             INSERT INTO Goal (
-                User_ID, kcal, protein, fats, carbs, desiredWeight, lifestyle, diet, startDate, endDate
+                User_ID, kcal, protein, fats, carbs, desiredWeight, lifestyle, startDate, endDate
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING ID;
         """
-        cur.execute(insert_query, (
-            user_id, kcal, protein, fats, carbs, desiredWeight, lifestyle, diet, startDate, endDate
-        ))
+        cur.execute(insert_query, (user_id, kcal, protein, fats, carbs, desiredWeight, lifestyle, startDate, endDate))
         goal_id = cur.fetchone()[0]
         conn.commit()
         return {
@@ -1167,6 +1278,7 @@ def create_goal(
         except Exception:
             pass
 
+
 @router.post("/get_meals")
 def get_meals(
         current_user: dict = Depends(get_current_user),
@@ -1179,16 +1291,14 @@ def get_meals(
         conn = get_db_connection()
         cur = conn.cursor()
 
-        # Pobierz wszystkie posiłki użytkownika
         cur.execute("""
-            SELECT ID, img_link, kcal, proteins, carbs, fats, date, healthy_index
+            SELECT ID, img_link, name, kcal, proteins, carbs, fats, date, healthy_index
             FROM Meal
-            WHERE User_ID = %s
+            WHERE User_ID = %s and added = true
             ORDER BY date DESC
         """, (user_id,))
         meals = cur.fetchall()
 
-        # Pobierz warningi dla tych posiłków
         meal_ids = [meal[0] for meal in meals]
         warnings_dict = {}
         if meal_ids:
@@ -1196,10 +1306,9 @@ def get_meals(
             for meal_id, warning in cur.fetchall():
                 warnings_dict.setdefault(meal_id, []).append(warning)
 
-        # Zbuduj wynik
         result = []
         for meal in meals:
-            meal_id, img_key, kcal, proteins, carbs, fats, date_val, healthy_index = meal
+            meal_id, img_key, name, kcal, proteins, carbs, fats, date_val, healthy_index = meal
             presigned_url = s3.generate_presigned_url(
                 'get_object',
                 Params={'Bucket': S3_BUCKET_NAME, 'Key': img_key},
@@ -1208,6 +1317,7 @@ def get_meals(
             result.append({
                 "id": meal_id,
                 "img_link": presigned_url,
+                "name": name,
                 "kcal": kcal,
                 "proteins": proteins,
                 "carbs": carbs,
@@ -1226,6 +1336,172 @@ def get_meals(
         conn.close()
 
 
+@router.post("/meal_update_protein")
+def meal_update_protein(
+        current_user: dict = Depends(get_current_user),
+        meal_id: int = Form(...),
+        new_value: int = Form(...),
+):
+    try:
+        sub = current_user["sub"]
+        email = current_user.get("email", "")
+        user_id = get_or_create_user_by_sub(sub, email)
+
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        cur.execute("UPDATE Meal SET proteins = %s WHERE ID = %s AND User_ID = %s", (new_value, meal_id, user_id))
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Nie znaleziono posiłku lub brak uprawnień")
+        conn.commit()
+
+        return {"message": "Protein value updated.", "meal": {"id": meal_id, "proteins": new_value}}
+    except Exception as e:
+        logger.error("Błąd przy aktualizacji białka w posiłku: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
+@router.post("/meal_update_fats")
+def meal_update_fats(
+        current_user: dict = Depends(get_current_user),
+        meal_id: int = Form(...),
+        new_value: int = Form(...),
+):
+    try:
+        sub = current_user["sub"]
+        email = current_user.get("email", "")
+        user_id = get_or_create_user_by_sub(sub, email)
 
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        cur.execute("UPDATE Meal SET fats = %s WHERE ID = %s AND User_ID = %s", (new_value, meal_id, user_id))
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Nie znaleziono posiłku lub brak uprawnień")
+        conn.commit()
+
+        return {"message": "fats value updated.", "meal": {"id": meal_id, "proteins": new_value}}
+    except Exception as e:
+        logger.error("Błąd przy aktualizacji białka w posiłku: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@router.post("/meal_update_carbs")
+def meal_update_carbs(
+        current_user: dict = Depends(get_current_user),
+        meal_id: int = Form(...),
+        new_value: int = Form(...),
+):
+    try:
+        sub = current_user["sub"]
+        email = current_user.get("email", "")
+        user_id = get_or_create_user_by_sub(sub, email)
+
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        cur.execute("UPDATE Meal SET carbs = %s WHERE ID = %s AND User_ID = %s", (new_value, meal_id, user_id))
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Nie znaleziono posiłku lub brak uprawnień")
+        conn.commit()
+
+        return {"message": "fats value updated.", "meal": {"id": meal_id, "proteins": new_value}}
+    except Exception as e:
+        logger.error("Błąd przy aktualizacji białka w posiłku: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@router.post("/meal_update_healthy_index")
+def meal_update_healthy_index(
+        current_user: dict = Depends(get_current_user),
+        meal_id: int = Form(...),
+        new_value: int = Form(...),
+):
+    try:
+        sub = current_user["sub"]
+        email = current_user.get("email", "")
+        user_id = get_or_create_user_by_sub(sub, email)
+
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        cur.execute("UPDATE Meal SET healthy_index = %s WHERE ID = %s AND User_ID = %s",
+                    (new_value % 11, meal_id, user_id))
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Nie znaleziono posiłku lub brak uprawnień")
+        conn.commit()
+
+        return {"message": "healthy_index value updated.", "meal": {"id": meal_id, "proteins": new_value}}
+    except Exception as e:
+        logger.error("Błąd przy aktualizacji białka w posiłku: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@router.post("/meal_update_kcal")
+def meal_update_kcal(
+        current_user: dict = Depends(get_current_user),
+        meal_id: int = Form(...),
+        new_value: int = Form(...),
+):
+    try:
+        sub = current_user["sub"]
+        email = current_user.get("email", "")
+        user_id = get_or_create_user_by_sub(sub, email)
+
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        cur.execute("UPDATE Meal SET kcal = %s WHERE ID = %s AND User_ID = %s", (new_value, meal_id, user_id))
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Nie znaleziono posiłku lub brak uprawnień")
+        conn.commit()
+
+        return {"message": "kcal value updated.", "meal": {"id": meal_id, "proteins": new_value}}
+    except Exception as e:
+        logger.error("Błąd przy aktualizacji białka w posiłku: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass

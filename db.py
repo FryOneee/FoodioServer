@@ -60,7 +60,6 @@ def initialize_schema():
                 carbs int NOT NULL,
                 desiredWeight numeric(3,1) NOT NULL,
                 lifestyle varchar(50) NOT NULL,
-                diet varchar(70) NOT NULL,
                 startDate date NOT NULL,
                 endDate date NOT NULL
             );
@@ -80,6 +79,7 @@ def initialize_schema():
             CREATE TABLE IF NOT EXISTS Meal (
                 ID int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
                 User_ID int NOT NULL,
+                name varchar(255) NOT NULL,
                 bar_code varchar(100) NOT NULL,
                 img_link varchar(255) NOT NULL,
                 kcal int NOT NULL,
@@ -134,6 +134,7 @@ def initialize_schema():
                 sex char(1) NULL,
                 birthDate date NULL,
                 height int NULL,
+                diet varchar(70) NULL,
                 dateOfJoin date NOT NULL
             );
         """)

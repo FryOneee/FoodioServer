@@ -90,6 +90,7 @@ def new_goal(sex, birthDate, height, lifestyle, diet, startTime, endTime):
     elif sex == 'M':
         sex = "Men"
 
+
     # Build the prompt for the ChatGPT query
     prompt = (
         f"Based on the following data: Sex: {sex}, Birth Date: {birthDate}, Height: {height} cm, "
@@ -123,3 +124,58 @@ def new_goal(sex, birthDate, height, lifestyle, diet, startTime, endTime):
         "carbs": carbs,
         "fats": fats
     }, result_text
+
+
+
+
+def meals_from_barcode_problems(food_name: str, ingredients: str, user_context: dict):
+    context_str = ""
+    if user_context.get("diet"):
+        context_str += f"Diet type: {user_context['diet']}. "
+    if user_context.get("problems"):
+        # Uwzględniamy informacje o problemach zdrowotnych użytkownika
+        context_str += f"User health issues: {', '.join(user_context['problems'])}. "
+
+    prompt = (
+        f"User information: {context_str}"
+        f"Food name: {food_name}. "
+        f"Food ingredients: {ingredients}. "
+        "Analyze the user information and the food ingredients to identify any potential conflicts. "
+        "For example, if the user is allergic to nuts and the food might contain nuts, indicate it as a problem. "
+        "Return the result as a JSON object with exactly the following keys: 'healthy_index' (an integer from 1 to 10) and 'problems' (an array of strings). "
+        "Do not include any additional text."
+    )
+
+    response = openai.ChatCompletion.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "user", "content": prompt}
+        ],
+        max_tokens=150,
+    )
+
+    result_text = response.choices[0].message["content"]
+
+    try:
+        parsed = json.loads(result_text)
+        healthy_index = parsed.get("healthy_index", -1)
+        problems = parsed.get("problems", [])
+    except Exception as e:
+        healthy_index = -1
+        problems = []
+
+    return {
+        "healthy_index": healthy_index,
+        "problems": problems
+    }, result_text
+
+
+
+
+
+
+
+
+
+
+
