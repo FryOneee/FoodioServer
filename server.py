@@ -33,8 +33,8 @@ logger.addHandler(console_handler)
 
 
 def get_secret():
-    secret_name = "foodio-secrets"
-    region_name = "eu-north-1"
+    secret_name = "secrets-to-foodio"
+    region_name = "eu-central-1"
 
     # Create a Secrets Manager client
     session = boto3.session.Session()
