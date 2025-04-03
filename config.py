@@ -4,8 +4,8 @@ import boto3
 from botocore.exceptions import ClientError
 
 def get_secret():
-    secret_name = "foodio-secrets"
-    region_name = "eu-north-1"
+    secret_name = "secrets-to-foodio"
+    region_name = "eu-central-1"
 
     session = boto3.session.Session()
     client = session.client(
