@@ -769,7 +769,7 @@ def update_sex(
 
         logger.info(f"plec otrzymana od uzytkownika to: {sex}")
 
-        cur.execute('UPDATE "User" SET sex = %s WHERE ID = %s', (sex[0], user_id))
+        cur.execute('UPDATE "User" SET sex = %s WHERE email=%s', (sex[0], email))
         if cur.rowcount == 0:
             raise HTTPException(status_code=404,
                                 detail="Użytkownik nie został znaleziony lub aktualizacja nie powiodła się")
