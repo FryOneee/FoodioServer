@@ -755,6 +755,8 @@ def update_sex(
         sex: str = Form(...)
 ):
     try:
+        logger.info(f"plec otrzymana od uzytkownika to: {sex}")
+
         sub = current_user["sub"]
         email = current_user.get("email", "")
         user_id = get_or_create_user_by_sub(sub, email)
