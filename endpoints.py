@@ -760,11 +760,14 @@ def update_sex(
         user_id = get_or_create_user_by_sub(sub, email)
         if sex not in ("W", "M", "X"):
             raise HTTPException(status_code=400,
+
                                 detail="Nieprawidłowa wartość dla pola sex. Dozwolone wartości to: W, M, X.")
         conn = get_db_connection()
         cur = conn.cursor()
 
-        cur.execute('UPDATE "User" SET sex = %s WHERE ID = %s', (sex, user_id))
+        logger.info(f"plec otrzymana od uzytkownika to: {sex}")
+
+        cur.execute('UPDATE "User" SET sex = %s WHERE ID = %s', (sex[0], user_id))
         if cur.rowcount == 0:
             raise HTTPException(status_code=404,
                                 detail="Użytkownik nie został znaleziony lub aktualizacja nie powiodła się")
