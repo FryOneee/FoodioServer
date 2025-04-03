@@ -271,7 +271,7 @@ def add_meal_from_barcode(
         meal_data = {
             "id": meal_id,
             "name": name,
-            "img_link": file_name,
+            "img_link": presigned_url,
             "kcal": kcal,
             "proteins": proteins,
             "carbs": carbs,
