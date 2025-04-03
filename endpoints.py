@@ -174,6 +174,7 @@ def add_meal_from_barcode(
         barcode: str = File(...)
 ):
     try:
+        logger.info(f"apple recipe ma forme (pierwsze 50 znakow): {apple_receipt[:50]}")
         sub = current_user["sub"]
         email = current_user.get("email", "")
         user_id = get_or_create_user_by_sub(sub, email)
@@ -185,6 +186,8 @@ def add_meal_from_barcode(
         today = date.today()
 
         original_transaction_id = decode_apple_receipt(apple_receipt)
+        logger.info(f"apple recipe ma forme (pierwsze 50 znakow): {apple_receipt[:50]}")
+
 
         # Sprawdzenie subskrypcji i limitów
         subscription_response = check_subscription_add_meal(cur, user_id, now, today, original_transaction_id)
