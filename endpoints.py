@@ -919,7 +919,7 @@ def create_problem(
 @router.post("/update_problems")
 def update_problems(
     current_user: dict = Depends(get_current_user),
-    problems: [str] = Form(...) #tuaj od chatagpt dostalem ze powinno byc List[str]
+    problems: List[str] = Form(...) #tuaj od chatagpt dostalem ze powinno byc List[str]
 ):
     try:
         sub = current_user["sub"]
