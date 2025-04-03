@@ -106,6 +106,7 @@ def check_subscription_add_meal(cur, user_id: int, now: datetime, today: date, o
 
 def decode_apple_receipt(receipt_data: str) -> str:
     try:
+        logger.info(f"Dlugosc paragonu wynosi: {len(receipt_data)}")
         decoded_bytes = base64.b64decode(receipt_data)
         receipt_json = json.loads(decoded_bytes)
         original_transaction_id = receipt_json.get("original_transaction_id")
