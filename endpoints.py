@@ -34,10 +34,29 @@ s3 = boto3.client(
 )
 openai.api_key = OPENAI_API_KEY
 
+@router.post("/test")
+def test(
+    current_user: dict = Depends(get_current_user),
+    test: str = Form(...)
+):
+    try:
+        logger.info("Test przeprowadzono pomyślnie")
+        # Przykładowa operacja – można tutaj umieścić dowolną logikę
+        wynik = {
+            "status": "success",
+            "user": current_user,
+            "test_message": test
+        }
+        return wynik
+    except Exception as e:
+        logger.error("Błąd podczas przeprowadzania testu: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Wystąpił błąd podczas testu")
+
 
 @router.post("/register")
 def register_user(email: str = Form(...), password: str = Form(...)):
     try:
+
         conn = get_db_connection()
         cur = conn.cursor()
 
