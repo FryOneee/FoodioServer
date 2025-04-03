@@ -171,7 +171,7 @@ def add_meal_from_barcode(
         latitude: float = Form(...),
         longitude: float = Form(...),
         original_transaction_id: str = Form(...),
-        barcode: str = File(...)
+        barcode: str = Form(...)
 ):
     try:
         logger.info(f"apple recipe ma forme (pierwsze 50 znakow): {original_transaction_id[:50]}")
