@@ -1,3 +1,5 @@
+from typing import List
+
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Depends, Request
 from datetime import datetime, date, timedelta
 from psycopg2.extras import RealDictCursor
