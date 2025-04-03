@@ -258,7 +258,7 @@ def add_meal_from_barcode(
 
         cur.execute("""
             INSERT INTO Meal(
-                User_ID, name, barcode, img_link, kcal, proteins, carbs, fats, date, healthy_index, latitude, longitude, added
+                User_ID, name, bar_code, img_link, kcal, proteins, carbs, fats, date, healthy_index, latitude, longitude, added
             )
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING ID
