@@ -55,6 +55,9 @@ def verify_apple_subscribe_active(original_transaction_id: str) -> bool:
         return False
 
 def check_subscription_add_meal(cur, user_id: int, now: datetime, today: date, original_transaction_id: str):
+    if original_transaction_id=="No":
+        return {"error": f"Only for subscribers", "status": 2137}
+
     cur.execute("""
         SELECT ID, isActive, original_transaction_id
         FROM Subscription

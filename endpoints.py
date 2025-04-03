@@ -190,10 +190,10 @@ def add_meal_from_barcode(
 
 
         # Sprawdzenie subskrypcji i limitów
-        subscription_response = check_subscription_add_meal(cur, user_id, now, today, original_transaction_id)
-        if subscription_response is not None:
-            conn.rollback()
-            return subscription_response
+        # subscription_response = check_subscription_add_meal(cur, user_id, now, today, original_transaction_id)
+        # if subscription_response is not None:
+        #     conn.rollback()
+        #     return subscription_response
 
         # Pobranie kontekstu użytkownika (problemy, dieta)
         cur.execute("SELECT description FROM Problem WHERE User_ID = %s LIMIT 7", (user_id,))
