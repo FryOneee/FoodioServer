@@ -32,7 +32,6 @@ s3 = boto3.client(
     aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
     region_name=AWS_REGION
 )
-openai.api_key = OPENAI_API_KEY
 
 @router.post("/test")
 def test(

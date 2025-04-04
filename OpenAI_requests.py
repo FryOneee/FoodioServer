@@ -1,4 +1,6 @@
-import openai
+from openai import OpenAI
+
+client = OpenAI()
 import json
 import re
 
@@ -26,23 +28,21 @@ def query_meal_nutrients(image_url: str, user_context: dict):
         "The value for 'problems' should be a list. Do not add any additional text."
     )
 
-    response = openai.ChatCompletion.create(
-        model="gpt-4o-mini",
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": image_url}
-                    }
-                ]
-            }
-        ],
-        max_tokens=300,
-    )
-    result_text = response.choices[0].message["content"]
+    response = client.chat.completions.create(model="gpt-4o-mini",
+    messages=[
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": image_url}
+                }
+            ]
+        }
+    ],
+    max_tokens=300)
+    result_text = response.choices[0].message.content
 
     if result_text.startswith("```"):
         result_text = re.sub(r'^```(?:json)?\s*|```$', '', result_text).strip()
@@ -99,15 +99,13 @@ def new_goal(sex, birthDate, height, lifestyle, diet, startTime, endTime):
         "Respond in JSON format with exactly the keys: 'kcal', 'proteins', 'carbs', 'fats'. Do not include any additional text."
     )
 
-    response = openai.ChatCompletion.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "user", "content": prompt}
-        ],
-        max_tokens=150
-    )
+    response = client.chat.completions.create(model="gpt-4o-mini",
+    messages=[
+        {"role": "user", "content": prompt}
+    ],
+    max_tokens=150)
 
-    result_text = response.choices[0].message["content"]
+    result_text = response.choices[0].message.content
 
     try:
         parsed = json.loads(result_text)
@@ -146,15 +144,13 @@ def meals_from_barcode_problems(food_name: str, ingredients: str, user_context: 
         "Do not include any additional text."
     )
 
-    response = openai.ChatCompletion.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "user", "content": prompt}
-        ],
-        max_tokens=150,
-    )
+    response = client.chat.completions.create(model="gpt-4o-mini",
+    messages=[
+        {"role": "user", "content": prompt}
+    ],
+    max_tokens=150)
 
-    result_text = response.choices[0].message["content"]
+    result_text = response.choices[0].message.content
 
     try:
         parsed = json.loads(result_text)
