@@ -80,7 +80,7 @@ def initialize_schema():
                 ID int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
                 User_ID int NOT NULL,
                 name varchar(255) NOT NULL,
-                bar_code varchar(100) NOT NULL,
+                bar_code varchar(100) NULL,
                 img_link varchar(255) NOT NULL,
                 kcal int NOT NULL,
                 proteins int NOT NULL,
