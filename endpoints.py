@@ -281,7 +281,7 @@ def add_meal_from_barcode(
             "longitude": str(longitude),
             "date": now.isoformat(),
             "added": False,
-            "warnings": []
+            "warnings": problems_with_id
         }
 
         cur.execute("""
@@ -590,7 +590,7 @@ def secure_meals_detailed(current_user: dict = Depends(get_current_user)):
         conn.close()
 
 
-@router.get("/edit_isAdded_true")
+@router.post("/edit_isAdded_true")
 def edit_isAdded_true(
         current_user: dict = Depends(get_current_user),
         meal_idx: int = Form(...)
@@ -629,7 +629,7 @@ def edit_isAdded_true(
             pass
 
 
-@router.get("/edit_isAdded_false")
+@router.post("/edit_isAdded_false")
 def edit_isAdded_false(
         current_user: dict = Depends(get_current_user),
         meal_idx: int = Form(...)
