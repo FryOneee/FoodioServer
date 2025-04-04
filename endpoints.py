@@ -415,7 +415,7 @@ def add_meal_from_photo(
         meal_data = {
             "id": updated_meal[0],
             "name": updated_meal[1],
-            "img_link": updated_meal[2],
+            "img_link": presigned_url,
             "kcal": updated_meal[3],
             "proteins": updated_meal[4],
             "carbs": updated_meal[5],
