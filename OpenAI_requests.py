@@ -28,7 +28,7 @@ def query_meal_nutrients(image_url: str, user_context: dict):
     prompt = (
         "Estimate the macronutrient values based on the image and the following user information: " +
         context_str +
-        "Also, list potential issues with the meal (for example, dietary incompatibility, high fat content, or other problems) "
+        "Also, list potential issues with the meal (for example, dietary incompatibility, high fat content, or other problems) return kcal in full product"
         "if applicable. Provide the result in JSON format, containing exactly the keys: 'name', 'kcal', 'proteins', 'carbs', 'fats', 'healthy_index', 'problems'. "
         "The value for 'problems' should be a list. Do not add any additional text."
     )
