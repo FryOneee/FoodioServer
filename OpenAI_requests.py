@@ -1,8 +1,10 @@
 from openai import OpenAI
 
-client = OpenAI()
 import json
 import re
+
+client = OpenAI()
+
 
 def query_meal_nutrients(image_url: str, user_context: dict):
     """

@@ -6,7 +6,9 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from typing import Optional, List
 from datetime import datetime, date, timedelta
 import psycopg2
-import openai
+from openai import OpenAI
+
+client = OpenAI(api_key=secrets_data.get("OPENAI_API_KEY"))
 import boto3
 import os
 import requests
@@ -65,7 +67,6 @@ app = FastAPI()
 # ------------------------------------------------------------
 
 # -- Ustaw klucz do OpenAI --
-openai.api_key = secrets_data.get("OPENAI_API_KEY")
 
 # -- Połączenie z bazą danych PostgreSQL --
 DB_HOST = secrets_data.get("DB_HOST")
@@ -668,27 +669,25 @@ def add_meal(
         meal_id = cur.fetchone()[0]
         conn.commit()
 
-        response = openai.ChatCompletion.create(
-            model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": (
-                            "Estimate the macronutrient values based on the image. Provide the result in JSON format, containing exactly the keys: ‘name’, ‘kcal’, ‘proteins’, ‘carbs’, ‘fats’, ‘healthy_index’. Do not add any additional text."
-                        )},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": presigned_url,
-                            },
+        response = client.chat.completions.create(model="gpt-4o-mini",
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": (
+                        "Estimate the macronutrient values based on the image. Provide the result in JSON format, containing exactly the keys: ‘name’, ‘kcal’, ‘proteins’, ‘carbs’, ‘fats’, ‘healthy_index’. Do not add any additional text."
+                    )},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": presigned_url,
                         },
-                    ],
-                }
-            ],
-            max_tokens=300,
-        )
-        openai_result_text = response.choices[0].message["content"]
+                    },
+                ],
+            }
+        ],
+        max_tokens=300)
+        openai_result_text = response.choices[0].message.content
 
         # Usuń znaki otaczające markdown, np. ```json na początku i ``` na końcu
         if openai_result_text.startswith("```"):
