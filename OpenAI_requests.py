@@ -5,8 +5,8 @@ import re
 
 from config import OPENAI_API_KEY
 
-client = OpenAI()
-client.api_key=OPENAI_API_KEY
+client = OpenAI(api_key=OPENAI_API_KEY)
+# client.api_key=OPENAI_API_KEY
 
 
 def query_meal_nutrients(image_url: str, user_context: dict):
