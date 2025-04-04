@@ -333,7 +333,6 @@ def add_meal_from_photo(
         now = datetime.now()
         today = date.today()
 
-        cur.execute("ALTER TABLE Meal ALTER COLUMN bar_code DROP NOT NULL")
 
 
         # original_transaction_id = decode_apple_receipt(apple_receipt)
