@@ -320,7 +320,7 @@ def add_meal_from_photo(
         current_user: dict = Depends(get_current_user),
         latitude: float = Form(...),
         longitude: float = Form(...),
-        apple_receipt: str = Form(...),
+        original_transaction_id: str = Form(...),
         image: UploadFile = File(...)
 ):
     try:
@@ -334,12 +334,12 @@ def add_meal_from_photo(
         now = datetime.now()
         today = date.today()
 
-        original_transaction_id = decode_apple_receipt(apple_receipt)
+        # original_transaction_id = decode_apple_receipt(apple_receipt)
 
-        subscription_response = check_subscription_add_meal(cur, user_id, now, today, original_transaction_id)
-        if subscription_response is not None:
-            conn.rollback()
-            return subscription_response
+        # subscription_response = check_subscription_add_meal(cur, user_id, now, today, original_transaction_id)
+        # if subscription_response is not None:
+        #     conn.rollback()
+        #     return subscription_response
 
         original_file_contents = image.file.read()
         file_name = f"{user_id}_{int(now.timestamp())}_{image.filename}"

@@ -555,7 +555,6 @@ def set_goal(user_id: int = Form(...), kcal: int = Form(...), goal_type: int = F
 @app.post("/add_meal")
 def add_meal(
         current_user: dict = Depends(get_current_user),
-        healthy_index: int = Form(...),
         latitude: float = Form(...),
         longitude: float = Form(...),
         image: UploadFile = File(...)
