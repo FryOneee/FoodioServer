@@ -333,6 +333,9 @@ def add_meal_from_photo(
         now = datetime.now()
         today = date.today()
 
+        cur.execute("ALTER TABLE Meal ALTER COLUMN bar_code DROP NOT NULL")
+
+
         # original_transaction_id = decode_apple_receipt(apple_receipt)
 
         # subscription_response = check_subscription_add_meal(cur, user_id, now, today, original_transaction_id)
@@ -395,9 +398,9 @@ def add_meal_from_photo(
 
         cur.execute("""
             INSERT INTO Meal(
-                User_ID, name,bar_code, img_link, kcal, proteins, carbs, fats, date, healthy_index, latitude, longitude, added
+                User_ID, name, img_link, kcal, proteins, carbs, fats, date, healthy_index, latitude, longitude, added
             )
-            VALUES (%s, %s,-1, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING ID
         """, (
         user_id, name_val, file_name, kcal_val, proteins_val, carbs_val, fats_val, now, healthy_index_val, latitude,
