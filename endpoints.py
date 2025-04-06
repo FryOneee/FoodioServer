@@ -195,10 +195,10 @@ def add_meal_from_barcode(
 
 
         # Sprawdzenie subskrypcji i limitów
-        subscription_response = check_subscription_add_meal(cur, user_id, now, today, original_transaction_id)
-        if subscription_response is not None:
-            conn.rollback()
-            return subscription_response
+        # subscription_response = check_subscription_add_meal(cur, user_id, now, today, original_transaction_id)
+        # if subscription_response is not None:
+        #     conn.rollback()
+        #     return subscription_response
 
         # Pobranie kontekstu użytkownika (problemy, dieta)
         cur.execute("SELECT description FROM Problem WHERE User_ID = %s LIMIT 7", (user_id,))
@@ -344,10 +344,10 @@ def add_meal_from_photo(
 
         # original_transaction_id = decode_apple_receipt(apple_receipt)
 
-        subscription_response = check_subscription_add_meal(cur, user_id, now, today, original_transaction_id)
-        if subscription_response is not None:
-            conn.rollback()
-            return subscription_response
+        # subscription_response = check_subscription_add_meal(cur, user_id, now, today, original_transaction_id)
+        # if subscription_response is not None:
+        #     conn.rollback()
+        #     return subscription_response
 
         original_file_contents = image.file.read()
         file_name = f"{user_id}_{int(now.timestamp())}_{image.filename}"
