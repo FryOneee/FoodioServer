@@ -190,7 +190,7 @@ def add_meal_from_barcode(
         # original_transaction_id = decode_apple_receipt(original_transaction_id)
         logger.info(f"apple recipe ma forme (pierwsze 50 znakow): {original_transaction_id[:50]}")
         original_file_contents = image.file.read()
-        file_name = f"{user_id}_{int(now.timestamp())}_{image.filename}"
+        file_name = f"{user_id}_{int(now.timestamp())}_{image.filename}_barcode"
         s3.put_object(Bucket=S3_BUCKET_NAME, Key=file_name, Body=original_file_contents)
 
 
