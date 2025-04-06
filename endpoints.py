@@ -1337,8 +1337,8 @@ def create_goal(
         nutrients, raw_response = new_goal(sex, birthDate, height, lifestyle, diet, str(startDate), str(endDate))
 
         cur.execute("""
-                    INSERT INTO OpenAI_request(User_ID, type, img_link, date)
-                    VALUES (%s, %s, %s, %s)
+                    INSERT INTO OpenAI_request(User_ID, type, date)
+                    VALUES (%s, %s, %s)
                     RETURNING ID
                 """, (user_id, 'G', now))
         openai_req_id = cur.fetchone()[0]
@@ -1360,6 +1360,9 @@ def create_goal(
         cur.execute(insert_query, (user_id, kcal, protein, fats, carbs, desiredWeight, lifestyle, startDate, endDate))
         goal_id = cur.fetchone()[0]
         conn.commit()
+
+        logger.info(f"Goal {goal_id} created. dane nowego goal to: "
+                    f"kcal: {kcal}, protein: {protein}, fats: {fats}, carbs: {carbs}")
         return {
             "message": "Cel został dodany.",
             "goal_id": goal_id,
