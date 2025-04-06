@@ -186,6 +186,8 @@ def add_meal_from_barcode(
         now = datetime.now()
         today = date.today()
 
+
+        logger.info("dodano kolumne language")
         cur.execute('ALTER TABLE "User" ADD COLUMN language VARCHAR(30)')
 
         # original_transaction_id = decode_apple_receipt(original_transaction_id)
@@ -821,6 +823,7 @@ def update_language(
     try:
         logger.info(f"jezyk otrzymany od uzytkownika to: {language}")
 
+
         # Lista dozwolonych języków (angielskie nazwy)
         allowed_languages = [
             "English", "Chinese", "Spanish", "Hindi", "Arabic",
@@ -838,6 +841,10 @@ def update_language(
 
         conn = get_db_connection()
         cur = conn.cursor()
+
+        logger.info("dodano kolumne language")
+        cur.execute('ALTER TABLE "User" ADD COLUMN language VARCHAR(30)')
+
 
         cur.execute('UPDATE "User" SET language = %s WHERE email=%s', (language, email))
         if cur.rowcount == 0:
