@@ -290,6 +290,7 @@ def add_meal_from_barcode(
             "added": False,
             "warnings": problems_with_id
         }
+        logger.info(f"meal_data: {meal_data}")
 
         cur.execute("""
             INSERT INTO OpenAI_request(User_ID, type, img_link, date)
@@ -434,6 +435,8 @@ def add_meal_from_photo(
             "date": updated_meal[10].isoformat() if isinstance(updated_meal[10], datetime) else updated_meal[10],
             "added": updated_meal[11]
         }
+        logger.info(f"meal_data: {meal_data}")
+
         cur.execute("SELECT warning FROM Warning WHERE Meal_ID = %s", (meal_id,))
         warning_rows = cur.fetchall()
         warnings = [row[0] for row in warning_rows] if warning_rows else []
