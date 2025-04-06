@@ -1337,10 +1337,10 @@ def create_goal(
         nutrients, raw_response = new_goal(sex, birthDate, height, lifestyle, diet, str(startDate), str(endDate))
 
         cur.execute("""
-            INSERT INTO OpenAI_request(User_ID, type, date)
-            VALUES (%s, %s, %s)
+            INSERT INTO OpenAI_request(User_ID, type, img_link, date)
+            VALUES (%s, %s, %s, %s)
             RETURNING ID
-        """, (user_id, 'G', now))
+        """, (user_id, 'G', None, now))
         openai_req_id = cur.fetchone()[0]
         conn.commit()
 
