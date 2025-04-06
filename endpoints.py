@@ -66,10 +66,10 @@ def register_user(email: str = Form(...), password: str = Form(...)):
             raise HTTPException(status_code=400, detail="Użytkownik o podanym email już istnieje.")
 
         cur.execute("""
-            INSERT INTO "User"(email, password, dateOfJoin)
-            VALUES (%s, %s, %s)
+            INSERT INTO "User"(email, password, dateOfJoin,language)
+            VALUES (%s, %s, %s,%s)
             RETURNING ID
-        """, (email, password, date.today()))
+        """, (email, password, date.today(), "English"))
         new_id = cur.fetchone()[0]
         conn.commit()
         logger.info("Zarejestrowano użytkownika: %s", email)
@@ -170,7 +170,9 @@ def add_meal_from_barcode(
         latitude: float = Form(...),
         longitude: float = Form(...),
         original_transaction_id: str = Form(...),
-        barcode: int = Form(...)
+        barcode: int = Form(...),
+        image: UploadFile = File(...)
+
 ):
     try:
         logger.info(f"apple recipe ma forme (pierwsze 50 znakow): {original_transaction_id[:50]}")
@@ -184,15 +186,20 @@ def add_meal_from_barcode(
         now = datetime.now()
         today = date.today()
 
+        cur.execute('ALTER TABLE "User" ADD COLUMN language VARCHAR(30)')
+
         # original_transaction_id = decode_apple_receipt(original_transaction_id)
         logger.info(f"apple recipe ma forme (pierwsze 50 znakow): {original_transaction_id[:50]}")
+        original_file_contents = image.file.read()
+        file_name = f"{user_id}_{int(now.timestamp())}_{image.filename}"
+        s3.put_object(Bucket=S3_BUCKET_NAME, Key=file_name, Body=original_file_contents)
 
 
         # Sprawdzenie subskrypcji i limitów
-        # subscription_response = check_subscription_add_meal(cur, user_id, now, today, original_transaction_id)
-        # if subscription_response is not None:
-        #     conn.rollback()
-        #     return subscription_response
+        subscription_response = check_subscription_add_meal(cur, user_id, now, today, original_transaction_id)
+        if subscription_response is not None:
+            conn.rollback()
+            return subscription_response
 
         # Pobranie kontekstu użytkownika (problemy, dieta)
         cur.execute("SELECT description FROM Problem WHERE User_ID = %s LIMIT 7", (user_id,))
@@ -200,13 +207,15 @@ def add_meal_from_barcode(
         user_problems = [row[0] for row in problems_rows] if problems_rows else []
 
         # Zmiana: pobieramy dietę z tabeli "User"
-        cur.execute("SELECT diet FROM \"User\" WHERE ID = %s", (user_id,))
+        cur.execute("SELECT diet, language FROM \"User\" WHERE ID = %s", (user_id,))
         diet_row = cur.fetchone()
         user_diet = diet_row[0] if diet_row and diet_row[0] is not None else ""
+        user_language = diet_row[1] if diet_row and diet_row[1] is not None else ""
 
         user_context = {
             "problems": user_problems,
-            "diet": user_diet
+            "diet": user_diet,
+            "language": user_language
         }
 
         # Pobranie danych z OpenFoodsAPI
@@ -220,13 +229,13 @@ def add_meal_from_barcode(
         healthy_index_val = problems_result.get("healthy_index", -1)
         problems_val = problems_result.get("problems", [])
 
-        image_response = requests.get(image_front_url)
-        if image_response.status_code != 200:
-            raise Exception("Błąd pobierania obrazka z URL-a.")
-        original_file_contents = image_response.content
+        # image_response = requests.get(image_front_url)
+        # if image_response.status_code != 200:
+        #     raise Exception("Błąd pobierania obrazka z URL-a.")
+        # original_file_contents = image_response.content
 
-        file_name = f"{user_id}_{int(now.timestamp())}_{name.replace(' ', '_')}.png"
-        s3.put_object(Bucket=S3_BUCKET_NAME, Key=file_name, Body=original_file_contents)
+        # file_name = f"{user_id}_{int(now.timestamp())}_{name.replace(' ', '_')}.png"
+        # s3.put_object(Bucket=S3_BUCKET_NAME, Key=file_name, Body=original_file_contents)
 
         image_stream = io.BytesIO(original_file_contents)
         img = Image.open(image_stream)
@@ -333,14 +342,12 @@ def add_meal_from_photo(
         now = datetime.now()
         today = date.today()
 
-
-
         # original_transaction_id = decode_apple_receipt(apple_receipt)
 
-        # subscription_response = check_subscription_add_meal(cur, user_id, now, today, original_transaction_id)
-        # if subscription_response is not None:
-        #     conn.rollback()
-        #     return subscription_response
+        subscription_response = check_subscription_add_meal(cur, user_id, now, today, original_transaction_id)
+        if subscription_response is not None:
+            conn.rollback()
+            return subscription_response
 
         original_file_contents = image.file.read()
         file_name = f"{user_id}_{int(now.timestamp())}_{image.filename}"
@@ -369,14 +376,16 @@ def add_meal_from_photo(
         problems_rows = cur.fetchall()
         user_problems = [row[0] for row in problems_rows] if problems_rows else []
 
-        # Zmiana: pobieramy dietę z tabeli "User"
-        cur.execute("SELECT diet FROM \"User\" WHERE ID = %s", (user_id,))
+        # Zmiana: pobieramy dietę i language z tabeli "User"
+        cur.execute("SELECT diet, language FROM \"User\" WHERE ID = %s", (user_id,))
         diet_row = cur.fetchone()
         user_diet = diet_row[0] if diet_row and diet_row[0] is not None else ""
+        user_language = diet_row[1] if diet_row and diet_row[1] is not None else ""
 
         user_context = {
             "problems": user_problems,
-            "diet": user_diet
+            "diet": user_diet,
+            "language": user_language
         }
 
         nutrients_dict, openai_result_text = query_meal_nutrients(presigned_url, user_context)
@@ -402,8 +411,8 @@ def add_meal_from_photo(
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING ID
         """, (
-        user_id, name_val, file_name, kcal_val, proteins_val, carbs_val, fats_val, now, healthy_index_val, latitude,
-        longitude, False))
+            user_id, name_val, file_name, kcal_val, proteins_val, carbs_val, fats_val, now, healthy_index_val, latitude,
+            longitude, False))
         meal_id = cur.fetchone()[0]
         conn.commit()
 
@@ -791,6 +800,54 @@ def update_sex(
         return {"message": "Pole sex zostało zaktualizowane.", "user_id": user_id, "sex": sex}
     except Exception as e:
         logger.error("Błąd przy aktualizacji pola sex: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+
+@router.post("/update_language")
+def update_language(
+        current_user: dict = Depends(get_current_user),
+        language: str = Form(...)
+):
+    try:
+        logger.info(f"jezyk otrzymany od uzytkownika to: {language}")
+
+        # Lista dozwolonych języków (angielskie nazwy)
+        allowed_languages = [
+            "English", "Chinese", "Spanish", "Hindi", "Arabic",
+            "French", "Korean", "Russian", "Polish", "Portuguese", "Japanese"
+        ]
+        if language not in allowed_languages:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Nieprawidłowa wartość dla pola language. Dozwolone wartości to: {', '.join(allowed_languages)}."
+            )
+
+        sub = current_user["sub"]
+        email = current_user.get("email", "")
+        user_id = get_or_create_user_by_sub(sub, email)
+
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        cur.execute('UPDATE "User" SET language = %s WHERE email=%s', (language, email))
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404,
+                                detail="Użytkownik nie został znaleziony lub aktualizacja nie powiodła się")
+        conn.commit()
+        logger.info("Zaktualizowano pole language dla user_id: %s", user_id)
+        return {"message": "Pole language zostało zaktualizowane.", "user_id": user_id, "language": language}
+    except Exception as e:
+        logger.error("Błąd przy aktualizacji pola language: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         try:
@@ -1246,6 +1303,8 @@ def create_goal(
         sub = current_user["sub"]
         email = current_user.get("email", "")
         user_id = get_or_create_user_by_sub(sub, email)
+
+        logger.info("create goal zostal wywolany")
 
         conn = get_db_connection()
         cur = conn.cursor()

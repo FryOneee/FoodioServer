@@ -24,29 +24,31 @@ def query_meal_nutrients(image_url: str, user_context: dict):
         context_str += f"Diet type: {user_context['diet']}. "
     if user_context.get("problems"):
         context_str += f"User problems: {', '.join(user_context['problems'])}. "
+    if user_context.get("language"):
+        context_str += f"If there are any problems, list them in {user_context['language']}. "
 
     prompt = (
         "Estimate the macronutrient values based on the image and the following user information: " +
         context_str +
-        "Also, list potential issues with the meal (for example, dietary incompatibility, high fat content, or other problems) return kcal in full product"
+        "Also, list potential issues with the meal (for example, dietary incompatibility, high fat content, or other problems) return kcal in full product "
         "if applicable. Provide the result in JSON format, containing exactly the keys: 'name', 'kcal', 'proteins', 'carbs', 'fats', 'healthy_index', 'problems'. "
         "The value for 'problems' should be a list. Do not add any additional text."
     )
 
     response = client.chat.completions.create(model="gpt-4o-mini",
-    messages=[
-        {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": prompt},
-                {
-                    "type": "image_url",
-                    "image_url": {"url": image_url}
-                }
-            ]
-        }
-    ],
-    max_tokens=300)
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": image_url}
+                    }
+                ]
+            }
+        ],
+        max_tokens=300)
     result_text = response.choices[0].message.content
 
     if result_text.startswith("```"):
@@ -84,7 +86,6 @@ def query_meal_nutrients(image_url: str, user_context: dict):
         },
         result_text
     )
-
 
 
 
@@ -138,6 +139,8 @@ def meals_from_barcode_problems(food_name: str, ingredients: str, user_context: 
     if user_context.get("problems"):
         # Uwzględniamy informacje o problemach zdrowotnych użytkownika
         context_str += f"User health issues: {', '.join(user_context['problems'])}. "
+    if user_context.get("language"):
+        context_str += f"If there are any problems, list them in {user_context['language']}. "
 
     prompt = (
         f"User information: {context_str}"
@@ -150,10 +153,10 @@ def meals_from_barcode_problems(food_name: str, ingredients: str, user_context: 
     )
 
     response = client.chat.completions.create(model="gpt-4o-mini",
-    messages=[
-        {"role": "user", "content": prompt}
-    ],
-    max_tokens=150)
+        messages=[
+            {"role": "user", "content": prompt}
+        ],
+        max_tokens=150)
 
     result_text = response.choices[0].message.content
 
@@ -169,7 +172,6 @@ def meals_from_barcode_problems(food_name: str, ingredients: str, user_context: 
         "healthy_index": healthy_index,
         "problems": problems
     }, result_text
-
 
 
 

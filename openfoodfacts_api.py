@@ -42,6 +42,8 @@ def getInfoFromOpenFoodsApi(barcode):
 
 
 if __name__ == '__main__':
-    getInfoFromOpenFoodsApi("5000112651324")
-    print()
-    getInfoFromOpenFoodsApi("5901939103372")
+    # getInfoFromOpenFoodsApi("5000112651324")
+    # print()
+    # getInfoFromOpenFoodsApi("5901939103372")
+    print(getInfoFromOpenFoodsApi("5901939103273"))
+    print(getInfoFromOpenFoodsApi("5900497312004"))

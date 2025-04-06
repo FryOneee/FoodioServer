@@ -135,7 +135,8 @@ def initialize_schema():
                 birthDate date NULL,
                 height int NULL,
                 diet varchar(70) NULL,
-                dateOfJoin date NOT NULL
+                dateOfJoin date NOT NULL,
+                language varchar(30) NULL
             );
         """)
 
