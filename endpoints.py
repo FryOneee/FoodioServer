@@ -264,7 +264,7 @@ def add_meal_from_barcode(
         # Zapis nowych problemów
         problems_with_id = []
         for problem in problems_val:
-            cur.execute("INSERT INTO Problem (User_ID, description) VALUES (%s, %s) RETURNING ID", (user_id, problem))
+            cur.execute("INSERT INTO Warning (User_ID, description) VALUES (%s, %s) RETURNING ID", (user_id, problem))
             problem_id = cur.fetchone()[0]
             problems_with_id.append({"id": problem_id, "description": problem})
         conn.commit()
@@ -405,7 +405,7 @@ def add_meal_from_photo(
 
         problems_with_id = []
         for problem in problems_val:
-            cur.execute("INSERT INTO Problem (User_ID, description) VALUES (%s, %s) RETURNING ID", (user_id, problem))
+            cur.execute("INSERT INTO Warning (User_ID, description) VALUES (%s, %s) RETURNING ID", (user_id, problem))
             problem_id = cur.fetchone()[0]
             problems_with_id.append({"id": problem_id, "description": problem})
         conn.commit()
