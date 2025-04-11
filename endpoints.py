@@ -3,6 +3,8 @@ from typing import List
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Depends, Request, Body
 from datetime import datetime, date, timedelta
 from psycopg2.extras import RealDictCursor
+from pydantic import BaseModel
+
 
 import json
 import re
@@ -32,6 +34,10 @@ s3 = boto3.client(
     aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
     region_name=AWS_REGION
 )
+
+
+class ProblemsUpdateRequest(BaseModel):
+    problems: List[str]
 
 @router.post("/test")
 def test(
@@ -1019,10 +1025,11 @@ def create_problem(
 
 @router.post("/update_problems")
 def update_problems(
-    current_user: dict = Depends(get_current_user),
-    problems: List[str] = Form(...)
+    payload: ProblemsUpdateRequest,
+    current_user: dict = Depends(get_current_user)
 ):
     try:
+        problems = payload.problems
         sub = current_user["sub"]
         email = current_user.get("email", "")
         user_id = get_or_create_user_by_sub(sub, email)
@@ -1030,22 +1037,19 @@ def update_problems(
         conn = get_db_connection()
         cur = conn.cursor()
 
-        logger.info(f"")
+        logger.info(f"Updating problems for user {user_id}")
 
-        # Pobierz aktualne problemy użytkownika (id oraz description)
         cur.execute("SELECT ID, description FROM Problem WHERE User_ID = %s", (user_id,))
         existing_rows = cur.fetchall()
-        # Utwórz mapę: description -> id
+
         existing_dict = {row[1]: row[0] for row in existing_rows}
         existing_descriptions = set(existing_dict.keys())
         provided_descriptions = set(problems)
 
-        # Usuń te problemy, które są w bazie, ale nie występują w przesłanej liście
         for desc in existing_descriptions - provided_descriptions:
             problem_id = existing_dict[desc]
             cur.execute("DELETE FROM Problem WHERE ID = %s", (problem_id,))
 
-        # Wstaw nowe problemy, które są przesłane, ale nie istnieją w bazie
         for desc in provided_descriptions - existing_descriptions:
             cur.execute("INSERT INTO Problem (User_ID, description) VALUES (%s, %s) RETURNING ID", (user_id, desc))
             new_id = cur.fetchone()[0]
@@ -1065,6 +1069,7 @@ def update_problems(
             conn.close()
         except Exception:
             pass
+
 
 
 @router.delete("/delete_problem/{problem_id}")
