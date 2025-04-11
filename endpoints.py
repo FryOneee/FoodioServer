@@ -1273,6 +1273,106 @@ def update_goal_carbs(
             pass
 
 
+# @router.post("/create_goal")
+# def create_goal(
+#         current_user: dict = Depends(get_current_user),
+#         desiredWeight: float = Form(...),
+#         lifestyle: str = Form(...),
+#         diet: str = Form(...),
+#         startDate: date = Form(...),
+#         endDate: date = Form(...)
+# ):
+#     logger.info("Początek tworzenia celu dla użytkownika.")
+#     try:
+#         sub = current_user["sub"]
+#         email = current_user.get("email", "")
+#         user_id = get_or_create_user_by_sub(sub, email)
+#         logger.info(f"Znaleziono użytkownika o ID: {user_id}")
+#
+#         conn = get_db_connection()
+#         cur = conn.cursor()
+#
+#         cur.execute('SELECT sex, birthDate, height FROM "User" WHERE ID = %s', (user_id,))
+#         user_data = cur.fetchone()
+#         logger.info(f"Dane użytkownika pobrane: {user_data}")
+#
+#         now = datetime.now()
+#         if not user_data:
+#             logger.error("Nie znaleziono danych użytkownika.")
+#             raise HTTPException(status_code=404, detail="Nie znaleziono danych użytkownika.")
+#         sex, birthDate, height = user_data
+#
+#         cur.execute('UPDATE "User" SET diet = %s WHERE ID = %s', (diet, user_id))
+#         conn.commit()
+#         logger.info("Zaktualizowano pole diet w tabeli User.")
+#
+#         cur.execute("SELECT date FROM OpenAI_request WHERE User_ID = %s AND type = 'G' ORDER BY date DESC LIMIT 1", (user_id,))
+#         last_request = cur.fetchone()
+#         logger.info(f"Ostatnie zapytanie OpenAI: {last_request}")
+#
+#         if last_request:
+#             last_date = last_request[0]
+#             if now - last_date < timedelta(weeks=1):
+#                 next_allowed = last_date + timedelta(weeks=1)
+#                 time_remaining = next_allowed - now
+#                 logger.warning(f"Cel został już utworzony niedawno; kolejna operacja za {time_remaining}.")
+#                 raise HTTPException(status_code=400,
+#                                     detail=f"Cel będzie można utworzyć ponownie za {time_remaining}.")
+#
+#         # Wywołanie funkcji new_goal
+#         nutrients, raw_response = new_goal(sex, birthDate, height, lifestyle, diet, str(startDate), str(endDate))
+#         logger.info(f"Wynik new_goal: {nutrients}")
+#
+#         cur.execute("""
+#             INSERT INTO OpenAI_request(User_ID, type, img_link, date)
+#             VALUES (%s, %s, %s, %s)
+#             RETURNING ID
+#         """, (user_id, 'G', None, now))
+#         openai_req_id = cur.fetchone()[0]
+#         conn.commit()
+#         logger.info(f"Zapisano nowy rekord w OpenAI_request: ID {openai_req_id}")
+#
+#         kcal = nutrients.get("kcal", -1)
+#         protein = nutrients.get("proteins", -1)
+#         fats = nutrients.get("fats", -1)
+#         carbs = nutrients.get("carbs", -1)
+#
+#         insert_query = """
+#             INSERT INTO Goal (
+#                 User_ID, kcal, protein, fats, carbs, desiredWeight, lifestyle, startDate, endDate
+#             )
+#             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+#             RETURNING ID;
+#         """
+#         cur.execute(insert_query, (user_id, kcal, protein, fats, carbs, desiredWeight, lifestyle, startDate, endDate))
+#         goal_id = cur.fetchone()[0]
+#         conn.commit()
+#         logger.info(f"Cel utworzony o ID: {goal_id}")
+#
+#         # Zwracamy wynik z widokiem
+#         return {
+#             "message": "Cel został dodany.",
+#             "goal_id": goal_id,
+#             "kcal": kcal,
+#             "protein": protein,
+#             "fats": fats,
+#             "carbs": carbs
+#         }
+#     except Exception as e:
+#         logger.exception("Wystąpił błąd podczas tworzenia celu:")
+#         raise HTTPException(status_code=500, detail=str(e))
+#     finally:
+#         try:
+#             cur.close()
+#             logger.info("Zamknięto kursor.")
+#         except Exception as ex:
+#             logger.warning(f"Błąd przy zamykaniu kursora: {ex}")
+#         try:
+#             conn.close()
+#             logger.info("Zamknięto połączenie z bazą.")
+#         except Exception as ex:
+#             logger.warning(f"Błąd przy zamykaniu połączenia: {ex}")
+
 @router.post("/create_goal")
 def create_goal(
         current_user: dict = Depends(get_current_user),
@@ -1306,18 +1406,10 @@ def create_goal(
         conn.commit()
         logger.info("Zaktualizowano pole diet w tabeli User.")
 
+        # Dla celów testowych pomijamy weryfikację daty ostatniego celu
         cur.execute("SELECT date FROM OpenAI_request WHERE User_ID = %s AND type = 'G' ORDER BY date DESC LIMIT 1", (user_id,))
         last_request = cur.fetchone()
-        logger.info(f"Ostatnie zapytanie OpenAI: {last_request}")
-
-        if last_request:
-            last_date = last_request[0]
-            if now - last_date < timedelta(weeks=1):
-                next_allowed = last_date + timedelta(weeks=1)
-                time_remaining = next_allowed - now
-                logger.warning(f"Cel został już utworzony niedawno; kolejna operacja za {time_remaining}.")
-                raise HTTPException(status_code=400,
-                                    detail=f"Cel będzie można utworzyć ponownie za {time_remaining}.")
+        logger.info(f"Ostatnie zapytanie OpenAI (pomijamy weryfikację): {last_request}")
 
         # Wywołanie funkcji new_goal
         nutrients, raw_response = new_goal(sex, birthDate, height, lifestyle, diet, str(startDate), str(endDate))
