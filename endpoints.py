@@ -1430,6 +1430,8 @@ def create_goal(
         fats = nutrients.get("fats", -1)
         carbs = nutrients.get("carbs", -1)
 
+        logger.info(f"takie wartosci maja nowe goal: kcal: {kcal}, protein: {protein}, fats: {fats}, carbs: {carbs}")
+
         insert_query = """
             INSERT INTO Goal (
                 User_ID, kcal, protein, fats, carbs, desiredWeight, lifestyle, startDate, endDate
