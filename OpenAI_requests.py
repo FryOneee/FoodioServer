@@ -9,7 +9,7 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 # client.api_key=OPENAI_API_KEY
 
 
-def query_meal_nutrients(image_url: str, user_context: dict):
+def query_meal_nutrients(image_url: str, user_context: dict,language: str ="english"):
     """
     Delegates the ChatGPT query to estimate macronutrient values based on the provided image URL
     and additional user context regarding dietary issues.
@@ -32,7 +32,7 @@ def query_meal_nutrients(image_url: str, user_context: dict):
             context_str +
             " Also, list any potential issues with the meal (e.g., dietary incompatibilities, high fat content, or other concerns) and include the full kcal value for the product, if applicable. " +
             "Provide the result in JSON format, containing exactly the keys: 'name', 'kcal', 'proteins', 'carbs', 'fats', 'healthy_index', and 'problems'. " +
-            "The value for 'problems' should be a list. Do not add any additional text. If there are additional issues not specified, do not include them."
+            f"The value for 'problems' should be a list. Do not add any additional text. If there are additional issues not specified, do not include them."
     )
 
     response = client.chat.completions.create(model="gpt-4o-mini",
