@@ -115,9 +115,14 @@ def new_goal(sex, birthDate, height, lifestyle, diet, startTime, endTime):
     result_text = response.choices[0].message.content
 
 
+    if result_text.startswith("```"):
+        result_text = re.sub(r'^```(?:json)?\s*|```$', '', result_text).strip()
+
+    # Jeśli wartość dla 'name' nie jest cytatem, dodajemy cudzysłowy
+    fixed_text = re.sub(r'("name":\s*)([A-Za-z]+)', r'\1"\2"', result_text)
 
     try:
-        parsed = json.loads(result_text)
+        parsed = json.loads(fixed_text)
         kcal = parsed.get("kcal", -1)
         proteins = parsed.get("proteins", -1)
         carbs = parsed.get("carbs", -1)
