@@ -178,7 +178,6 @@ def add_meal_from_barcode(
         original_transaction_id: str = Form(...),
         barcode: int = Form(...),
         image: UploadFile = File(...)
-
 ):
     try:
         logger.info(f"apple recipe ma forme (pierwsze 50 znakow): {original_transaction_id[:50]}")
@@ -192,26 +191,17 @@ def add_meal_from_barcode(
         now = datetime.now()
         today = date.today()
 
-
         # original_transaction_id = decode_apple_receipt(original_transaction_id)
         logger.info(f"apple recipe ma forme (pierwsze 50 znakow): {original_transaction_id[:50]}")
         original_file_contents = image.file.read()
         file_name = f"{user_id}_{int(now.timestamp())}_barcode_{image.filename}"
         s3.put_object(Bucket=S3_BUCKET_NAME, Key=file_name, Body=original_file_contents)
 
-
-        # Sprawdzenie subskrypcji i limitów
-        # subscription_response = check_subscription_add_meal(cur, user_id, now, today, original_transaction_id)
-        # if subscription_response is not None:
-        #     conn.rollback()
-        #     return subscription_response
-
         # Pobranie kontekstu użytkownika (problemy, dieta)
         cur.execute("SELECT description FROM Problem WHERE User_ID = %s LIMIT 7", (user_id,))
         problems_rows = cur.fetchall()
         user_problems = [row[0] for row in problems_rows] if problems_rows else []
 
-        # Zmiana: pobieramy dietę z tabeli "User"
         cur.execute("SELECT diet, language FROM \"User\" WHERE ID = %s", (user_id,))
         diet_row = cur.fetchone()
         user_diet = diet_row[0] if diet_row and diet_row[0] is not None else ""
@@ -234,14 +224,6 @@ def add_meal_from_barcode(
         healthy_index_val = problems_result.get("healthy_index", -1)
         problems_val = problems_result.get("problems", [])
 
-        # image_response = requests.get(image_front_url)
-        # if image_response.status_code != 200:
-        #     raise Exception("Błąd pobierania obrazka z URL-a.")
-        # original_file_contents = image_response.content
-
-        # file_name = f"{user_id}_{int(now.timestamp())}_{name.replace(' ', '_')}.png"
-        # s3.put_object(Bucket=S3_BUCKET_NAME, Key=file_name, Body=original_file_contents)
-
         image_stream = io.BytesIO(original_file_contents)
         img = Image.open(image_stream)
 
@@ -261,14 +243,7 @@ def add_meal_from_barcode(
             'get_object', Params={'Bucket': S3_BUCKET_NAME, 'Key': resized_file_name}, ExpiresIn=300
         )
 
-        # Zapis nowych problemów
-        problems_with_id = []
-        for problem in problems_val:
-            cur.execute("INSERT INTO Warning (User_ID, description) VALUES (%s, %s) RETURNING ID", (user_id, problem))
-            problem_id = cur.fetchone()[0]
-            problems_with_id.append({"id": problem_id, "description": problem})
-        conn.commit()
-
+        # Wstawienie rekordu do Meal, aby uzyskać meal_id
         cur.execute("""
             INSERT INTO Meal(
                 User_ID, name, bar_code, img_link, kcal, proteins, carbs, fats, date, healthy_index, latitude, longitude, added
@@ -276,9 +251,17 @@ def add_meal_from_barcode(
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING ID
         """, (
-        user_id, name, barcode, file_name, kcal, proteins, carbs, fats, now, healthy_index_val, latitude, longitude,
-        False))
+            user_id, name, barcode, file_name, kcal, proteins, carbs, fats, now, healthy_index_val, latitude, longitude,
+            False))
         meal_id = cur.fetchone()[0]
+        conn.commit()
+
+        # Wstawienie problemów do tabeli Warning z wykorzystaniem meal_id
+        problems_with_id = []
+        for problem in problems_val:
+            cur.execute("INSERT INTO Warning (Meal_ID, warning) VALUES (%s, %s) RETURNING ID", (meal_id, problem))
+            problem_id = cur.fetchone()[0]
+            problems_with_id.append({"id": problem_id, "description": problem})
         conn.commit()
 
         meal_data = {
@@ -296,7 +279,6 @@ def add_meal_from_barcode(
             "added": False,
             "warnings": problems_with_id
         }
-        # logger.info(f"meal_data: {meal_data}")
 
         cur.execute("""
             INSERT INTO OpenAI_request(User_ID, type, img_link, date)
@@ -310,7 +292,7 @@ def add_meal_from_barcode(
         return {
             "message": "Dodano posiłek i zaktualizowano dane makroskładników.",
             "meal": meal_data,
-            "warnings": meal_data["warnings"],
+            "warnings": problems_with_id,
             "openai_request_id": openai_req_id,
             "extracted_problems": problems_with_id
         }
@@ -327,7 +309,6 @@ def add_meal_from_barcode(
             conn.close()
         except Exception:
             pass
-
 
 @router.post("/add_meal_from_photo")
 def add_meal_from_photo(
@@ -347,13 +328,6 @@ def add_meal_from_photo(
 
         now = datetime.now()
         today = date.today()
-
-        # original_transaction_id = decode_apple_receipt(apple_receipt)
-
-        # subscription_response = check_subscription_add_meal(cur, user_id, now, today, original_transaction_id)
-        # if subscription_response is not None:
-        #     conn.rollback()
-        #     return subscription_response
 
         original_file_contents = image.file.read()
         file_name = f"{user_id}_{int(now.timestamp())}_{image.filename}"
@@ -382,7 +356,6 @@ def add_meal_from_photo(
         problems_rows = cur.fetchall()
         user_problems = [row[0] for row in problems_rows] if problems_rows else []
 
-        # Zmiana: pobieramy dietę i language z tabeli "User"
         cur.execute("SELECT diet, language FROM \"User\" WHERE ID = %s", (user_id,))
         diet_row = cur.fetchone()
         user_diet = diet_row[0] if diet_row and diet_row[0] is not None else ""
@@ -403,13 +376,7 @@ def add_meal_from_photo(
         healthy_index_val = nutrients_dict.get("healthy_index", -1)
         problems_val = nutrients_dict.get("problems", [])
 
-        problems_with_id = []
-        for problem in problems_val:
-            cur.execute("INSERT INTO Warning (User_ID, description) VALUES (%s, %s) RETURNING ID", (user_id, problem))
-            problem_id = cur.fetchone()[0]
-            problems_with_id.append({"id": problem_id, "description": problem})
-        conn.commit()
-
+        # Wstawienie rekordu do Meal, aby uzyskać meal_id
         cur.execute("""
             INSERT INTO Meal(
                 User_ID, name, img_link, kcal, proteins, carbs, fats, date, healthy_index, latitude, longitude, added
@@ -420,6 +387,14 @@ def add_meal_from_photo(
             user_id, name_val, file_name, kcal_val, proteins_val, carbs_val, fats_val, now, healthy_index_val, latitude,
             longitude, False))
         meal_id = cur.fetchone()[0]
+        conn.commit()
+
+        # Wstawienie problemów do tabeli Warning z wykorzystaniem meal_id
+        problems_with_id = []
+        for problem in problems_val:
+            cur.execute("INSERT INTO Warning (Meal_ID, warning) VALUES (%s, %s) RETURNING ID", (meal_id, problem))
+            problem_id = cur.fetchone()[0]
+            problems_with_id.append({"id": problem_id, "description": problem})
         conn.commit()
 
         cur.execute("""
@@ -441,12 +416,7 @@ def add_meal_from_photo(
             "date": updated_meal[10].isoformat() if isinstance(updated_meal[10], datetime) else updated_meal[10],
             "added": updated_meal[11]
         }
-        # logger.info(f"meal_data: {meal_data}")
-
-        cur.execute("SELECT warning FROM Warning WHERE Meal_ID = %s", (meal_id,))
-        warning_rows = cur.fetchall()
-        warnings = [row[0] for row in warning_rows] if warning_rows else []
-        meal_data["warnings"] = warnings
+        meal_data["warnings"] = problems_with_id
 
         cur.execute("""
             INSERT INTO OpenAI_request(User_ID, type, img_link, date)
@@ -460,7 +430,7 @@ def add_meal_from_photo(
         return {
             "message": "Dodano posiłek i zaktualizowano dane makroskładników przez OpenAI.",
             "meal": meal_data,
-            "warnings": meal_data["warnings"],
+            "warnings": problems_with_id,
             "openai_request_id": openai_req_id,
             "openai_result": openai_result_text,
             "extracted_problems": problems_with_id
@@ -479,6 +449,7 @@ def add_meal_from_photo(
             conn.close()
         except Exception:
             pass
+
 
 
 @router.get("/secure_meals_by_day")
