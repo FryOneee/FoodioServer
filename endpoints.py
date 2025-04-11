@@ -803,7 +803,7 @@ def update_language(
 
         # Lista dozwolonych języków (angielskie nazwy)
         allowed_languages = [
-            "English", "Chinese", "Spanish", "Hindi", "Arabic",
+            "English", "Chinese", "Spanish", "Hindi", "Arabic","Chinese Simplified",
             "French", "Korean", "Russian", "Polish", "Portuguese", "Japanese"
         ]
         if language not in allowed_languages:
