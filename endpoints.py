@@ -1020,7 +1020,7 @@ def create_problem(
 @router.post("/update_problems")
 def update_problems(
     current_user: dict = Depends(get_current_user),
-    problems: List[str] = Body(...)
+    problems: List[str] = Form(...)
 ):
     try:
         sub = current_user["sub"]
