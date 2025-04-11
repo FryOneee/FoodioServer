@@ -28,11 +28,11 @@ def query_meal_nutrients(image_url: str, user_context: dict):
         context_str += f"If there are any problems, list them in {user_context['language']}. "
 
     prompt = (
-        "Estimate the macronutrient values based on the image and the following user information: " +
-        context_str +
-        "Also, list potential issues with the meal (for example, dietary incompatibility, high fat content, or other problems) return kcal in full product "
-        "if applicable. Provide the result in JSON format, containing exactly the keys: 'name', 'kcal', 'proteins', 'carbs', 'fats', 'healthy_index', 'problems'. "
-        "The value for 'problems' should be a list. Do not add any additional text."
+            "Estimate the macronutrient values based on the image and the following user information: " +
+            context_str +
+            " Also, list any potential issues with the meal (e.g., dietary incompatibilities, high fat content, or other concerns) and include the full kcal value for the product, if applicable. " +
+            "Provide the result in JSON format, containing exactly the keys: 'name', 'kcal', 'proteins', 'carbs', 'fats', 'healthy_index', and 'problems'. " +
+            "The value for 'problems' should be a list. Do not add any additional text. If there are additional issues not specified, do not include them."
     )
 
     response = client.chat.completions.create(model="gpt-4o-mini",
