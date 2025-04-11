@@ -1412,8 +1412,9 @@ def create_goal(
         logger.info(f"Ostatnie zapytanie OpenAI (pomijamy weryfikację): {last_request}")
 
         # Wywołanie funkcji new_goal
-        nutrients, raw_response = new_goal(sex, birthDate, height, lifestyle, diet, str(startDate), str(endDate))
+        nutrients, raw_response,text_from_openai = new_goal(sex, birthDate, height, lifestyle, diet, str(startDate), str(endDate))
         logger.info(f"Wynik new_goal: {nutrients}")
+        logger.info(f"Wynik new_goal: {text_from_openai}")
 
         cur.execute("""
             INSERT INTO OpenAI_request(User_ID, type, img_link, date)

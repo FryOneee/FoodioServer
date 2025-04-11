@@ -2,6 +2,7 @@ from openai import OpenAI
 
 import json
 import re
+import logging
 
 from config import OPENAI_API_KEY
 
@@ -113,6 +114,8 @@ def new_goal(sex, birthDate, height, lifestyle, diet, startTime, endTime):
 
     result_text = response.choices[0].message.content
 
+
+
     try:
         parsed = json.loads(result_text)
         kcal = parsed.get("kcal", -1)
@@ -127,7 +130,7 @@ def new_goal(sex, birthDate, height, lifestyle, diet, startTime, endTime):
         "proteins": proteins,
         "carbs": carbs,
         "fats": fats
-    }, result_text
+    }, result_text,result_text
 
 
 
