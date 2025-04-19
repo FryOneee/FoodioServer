@@ -1,4 +1,4 @@
-# checkSubscription.py
+import os
 from fastapi import HTTPException
 from datetime import date, datetime
 import httpx
@@ -17,6 +17,10 @@ from config import (
 logger = logging.getLogger("server_logger")
 _cached_apple_jwt = None
 _cached_apple_jwt_exp = 0
+
+# Użyj sandboxu, jeśli zmienna środowiskowa APPLE_USE_SANDBOX jest ustawiona na "true"
+USE_SANDBOX = os.getenv("APPLE_USE_SANDBOX", "false").lower() == "true"
+
 
 def create_apple_jwt() -> str:
     global _cached_apple_jwt, _cached_apple_jwt_exp
@@ -38,9 +42,21 @@ def create_apple_jwt() -> str:
     _cached_apple_jwt_exp = current_time + 15777000
     return token
 
-def verify_apple_subscribe_active(original_transaction_id: str) -> bool:
+
+def verify_apple_subscribe_active(receipt_data: str) -> bool:
+    # Decode receipt and get transaction ID
+    tx_id = decode_apple_receipt(receipt_data)
     token = create_apple_jwt()
-    url = f"https://api.storekit.itunes.apple.com/inApps/v1/subscriptions/{original_transaction_id}"
+
+    # Production endpoint (zakomentowane)
+    # prod_url = f"https://api.storekit.itunes.apple.com/inApps/v1/subscriptions/{tx_id}"
+
+    # Sandbox endpoint
+    sandbox_url = f"https://api.storekit-sandbox.itunes.apple.com/inApps/v1/subscriptions/{tx_id}"
+
+    url = sandbox_url if USE_SANDBOX else sandbox_url  # używamy sandbox w testach
+    # Aby wrócić do produkcji, ustaw USE_SANDBOX=False lub usuń komentarz powyżej
+
     headers = {"Authorization": f"Bearer {token}"}
     try:
         resp = httpx.get(url, headers=headers, timeout=10)
@@ -48,16 +64,19 @@ def verify_apple_subscribe_active(original_transaction_id: str) -> bool:
         data = resp.json()
         return data.get("status") in (0, 3, 4, 5)
     except httpx.HTTPStatusError as e:
-        logger.error("Apple Server API error %s: %s", e.response.status_code, e.response.text)
+        logger.error("Apple API error %s: %s", e.response.status_code, e.response.text)
         return False
     except Exception as e:
-        logger.error("Network error verifying Apple subscription: %s", e)
+        logger.error("Network error: %s", e)
         return False
 
-def check_subscription_add_meal(cur, user_id: int, now: datetime, today: date, original_transaction_id: str):
-    if original_transaction_id=="No":
-        return {"error": f"Only for subscribers", "status": 2137}
 
+def check_subscription_add_meal(cur, user_id: int, now: datetime, today: date, original_transaction_id: str) -> bool:
+    # If the provided original_transaction_id is "No", treat it as no subscription
+    if original_transaction_id == "No":
+        return False
+
+    # Retrieve the subscription record for the user
     cur.execute("""
         SELECT ID, isActive, original_transaction_id
         FROM Subscription
@@ -66,13 +85,16 @@ def check_subscription_add_meal(cur, user_id: int, now: datetime, today: date, o
     row = cur.fetchone()
     subscription_id, is_active, stored_receipt = (row if row else (None, 'N', None))
 
-    # Jeśli istnieje zapis subskrypcji i jest nieaktywny → weryfikuj po stored_receipt
-    if stored_receipt and is_active == 'N':
+    # Verify the stored receipt with Apple's API if available
+    if stored_receipt:
         if verify_apple_subscribe_active(stored_receipt):
             cur.execute("UPDATE Subscription SET isActive = 'Y' WHERE ID = %s", (subscription_id,))
             is_active = 'Y'
+        else:
+            cur.execute("UPDATE Subscription SET isActive = 'N' WHERE ID = %s", (subscription_id,))
+            is_active = 'N'
 
-    # Jeśli klient przesłał nowy receipt → weryfikuj i zapisuj
+    # If a new receipt is provided and differs from the stored one, verify and update or insert a record
     if original_transaction_id and original_transaction_id != stored_receipt:
         if verify_apple_subscribe_active(original_transaction_id):
             if subscription_id:
@@ -86,39 +108,39 @@ def check_subscription_add_meal(cur, user_id: int, now: datetime, today: date, o
                     INSERT INTO Subscription(User_ID, original_transaction_id, isActive)
                     VALUES(%s, %s, 'Y')
                 """, (user_id, original_transaction_id))
-                subscription_id = cur.lastrowid
             is_active = 'Y'
+        else:
+            is_active = 'N'
 
-    daily_limit = 50 if is_active == 'Y' else 3
-    cur.execute("SELECT COUNT(*) FROM OpenAI_request WHERE User_ID = %s AND date::date = %s", (user_id, today))
-    if cur.fetchone()[0] >= daily_limit:
-        return {"error": f"Limit {daily_limit} zapytań na dzień wyczerpany.", "status": 429}
+    return True if is_active == 'Y' else False
 
-    cur.execute("SELECT COUNT(*) FROM OpenAI_request WHERE User_ID = %s", (user_id,))
-    total_requests = cur.fetchone()[0]
 
-    if is_active == 'Y' and (total_requests + 1) % 10 == 0:
-        receipt_to_check = stored_receipt or original_transaction_id
-        if not verify_apple_subscribe_active(receipt_to_check):
-            if subscription_id:
-                cur.execute("UPDATE Subscription SET isActive = 'N' WHERE ID = %s", (subscription_id,))
-            return {"error": "Subskrypcja wygasła wg Apple.", "status": 403}
-
-    return None
+def is_subscription_active(cur, user_id: int) -> bool:
+    cur.execute("""
+        SELECT isActive
+        FROM Subscription
+        WHERE User_ID = %s
+        ORDER BY ID DESC
+        LIMIT 1
+    """, (user_id,))
+    row = cur.fetchone()
+    return True if row and row[0] == 'Y' else False
 
 
 def decode_apple_receipt(receipt_data: str) -> str:
     try:
-        logger.info(f"Dlugosc paragonu wynosi: {len(receipt_data)}")
-        decoded_bytes = base64.b64decode(receipt_data)
-        receipt_json = json.loads(decoded_bytes)
-        original_transaction_id = receipt_json.get("original_transaction_id")
-        if not original_transaction_id:
-            raise HTTPException(status_code=400, detail="original_transaction_id not found in receipt")
-        return original_transaction_id
+        logger.info(f"Długość paragonu: {len(receipt_data)}")
+        decoded = base64.b64decode(receipt_data)
+        receipt_json = json.loads(decoded)
+        tx_id = receipt_json.get("original_transaction_id")
+        if not tx_id:
+            raise HTTPException(status_code=400, detail="original_transaction_id not found")
+        return tx_id
     except (ValueError, json.JSONDecodeError) as e:
-        logger.error("Error decoding Apple receipt: %s", e)
+        logger.error("Error decoding receipt: %s", e)
         raise HTTPException(status_code=400, detail="Invalid Apple receipt format")
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error("Unexpected error decoding receipt: %s", e)
-        raise HTTPException(status_code=400, detail="Unable to parse Apple receipt")
+        logger.error("Unexpected decode error: %s", e)
+        raise HTTPException(status_code=400, detail="Unable to parse receipt")

@@ -135,7 +135,7 @@ def delete_account(current_user: dict = Depends(get_current_user)):
 def buy_subscription(
         current_user: dict = Depends(get_current_user),
         subscription_type: int = Form(...),
-        receipt: str = Form(...)
+        original_transaction_id: str = Form(...)
 ):
     try:
         original_transaction_id = decode_apple_receipt(receipt)
@@ -1688,6 +1688,70 @@ def meal_update_kcal(
     except Exception as e:
         logger.error("Błąd przy aktualizacji białka w posiłku: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+class AppleNotification(BaseModel):
+    user_id: int
+    subscription_type: int
+    original_transaction_id: str
+    notification_type: str  # Możliwe wartości: "BUY", "RENEW", "CANCEL"
+
+
+@router.post("/apple_notification")
+def handle_apple_notification(notification: AppleNotification):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        if notification.notification_type == "BUY":
+            # Przy zakupie subskrypcji – tworzymy nowy rekord lub aktualizujemy istniejący:
+            cur.execute("""
+                INSERT INTO Subscription (User_ID, subscription_type, original_transaction_id, isActive)
+                VALUES (%s, %s, %s, 'Y')
+                ON CONFLICT (User_ID) DO UPDATE
+                  SET subscription_type = EXCLUDED.subscription_type,
+                      original_transaction_id = EXCLUDED.original_transaction_id,
+                      isActive = 'Y';
+            """, (notification.user_id, notification.subscription_type, notification.original_transaction_id))
+            conn.commit()
+            return {"message": "Subskrypcja kupiona"}
+
+        elif notification.notification_type == "RENEW":
+            # Przy odnowieniu – ustawiamy status subskrypcji na aktywny ('Y')
+            cur.execute("""
+                UPDATE Subscription
+                SET isActive = 'Y'
+                WHERE original_transaction_id = %s;
+            """, (notification.original_transaction_id,))
+            conn.commit()
+            return {"message": "Subskrypcja odnowiona - aktywna"}
+
+        elif notification.notification_type == "CANCEL":
+            # Przy anulowaniu – ustawiamy status subskrypcji jako nieaktywny ('N')
+            cur.execute("""
+                UPDATE Subscription
+                SET isActive = 'N'
+                WHERE original_transaction_id = %s;
+            """, (notification.original_transaction_id,))
+            conn.commit()
+            return {"message": "Subskrypcja anulowana"}
+
+        else:
+            raise HTTPException(status_code=400, detail="Nieprawidłowy typ powiadomienia")
+
+    except Exception as e:
+        logger.error("Błąd przy obsłudze powiadomienia Apple: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
     finally:
         try:
             cur.close()
