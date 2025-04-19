@@ -137,10 +137,11 @@ def buy_subscription(
         subscription_type: int = Form(...),
         original_transaction_id: str = Form(...)
 ):
-    try:
-        original_transaction_id = decode_apple_receipt(receipt)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    # try:
+    #     original_transaction_id = decode_apple_receipt(receipt)
+    # except Exception as e:
+    #     raise HTTPException(status_code=400, detail=str(e))
+
 
     if not verify_apple_subscribe_active(original_transaction_id):
         raise HTTPException(status_code=403, detail="Subskrypcja nieaktywna wg Apple")
@@ -148,6 +149,9 @@ def buy_subscription(
     sub = current_user["sub"]
     email = current_user.get("email", "")
     user_id = get_or_create_user_by_sub(sub, email)
+
+    logger.info(f"{email} original_transaction_id is {original_transaction_id}")
+
 
     conn = get_db_connection()
     try:
